@@ -117,15 +117,29 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
         [retargeting_joint_names.index(name) for name in sapien_joint_names]
     ).astype(int)
 
+    last_render_time = time.time()
+    render_interval = 1.0 / 30.0  # 限制渲染频率到30fps
+    
     while True:
-        try:
-            bgr = queue.get(timeout=5)
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        except Empty:
-            logger.error(
-                "Fail to fetch image from camera in 5 secs. Please check your web camera device."
-            )
-            return
+        # 清空队列中所有旧帧，只保留最新的
+        bgr = None
+        while True:
+            try:
+                bgr = queue.get_nowait()
+            except Empty:
+                break
+        
+        if bgr is None:
+            # 如果队列为空，等待一小段时间再继续
+            time.sleep(0.01)
+            # 即使没有新帧，也要定期渲染以保持界面响应
+            current_time = time.time()
+            if current_time - last_render_time >= render_interval:
+                viewer.render()
+                last_render_time = current_time
+            continue
+            
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
         _, joint_pos, keypoint_2d, _ = detector.detect(rgb)
         bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d, style="default")
@@ -148,8 +162,11 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
             qpos = retargeting.retarget(ref_value)
             robot.set_qpos(qpos[retargeting_to_sapien])
 
-        for _ in range(2):
+        # 限制渲染频率，避免渲染成为瓶颈
+        current_time = time.time()
+        if current_time - last_render_time >= render_interval:
             viewer.render()
+            last_render_time = current_time
 
 
 def produce_frame(queue: multiprocessing.Queue, camera_path: Optional[str] = None):
@@ -160,10 +177,15 @@ def produce_frame(queue: multiprocessing.Queue, camera_path: Optional[str] = Non
 
     while cap.isOpened():
         success, image = cap.read()
-        time.sleep(1 / 30.0)
         if not success:
+            time.sleep(1 / 30.0)
             continue
-        queue.put(image)
+        # 使用非阻塞put，如果队列满了就直接丢弃这一帧（消费者会处理队列中的帧）
+        try:
+            queue.put_nowait(image)
+        except:
+            pass  # 队列满了，跳过这一帧，保持实时性
+        time.sleep(1 / 30.0)
 
 
 def main(
@@ -188,7 +210,7 @@ def main(
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
     )
 
-    queue = multiprocessing.Queue(maxsize=1000)
+    queue = multiprocessing.Queue(maxsize=2)  # 减小队列大小，只保留最新2帧
     producer_process = multiprocessing.Process(
         target=produce_frame, args=(queue, camera_path)
     )
