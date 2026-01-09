@@ -1,5 +1,33 @@
+# Dex Retargeting
+### Installation on macOS
+1. Install Vulkan SDK from [LunarXchange](https://vulkan.lunarg.com/sdk/home).
+2. clone repo
+    ```shell
+    git clone https://github.com/sszxc/dex-retargeting.git
+    git submodule update --init --recursive  # download the assets
+    ```
+
+3. Create conda environment
+    ```shell
+    conda create -n dex_retargeting python=3.12.12
+    conda activate dex_retargeting
+    pip install torch torchvision
+    pip install sapien==3.0.2
+    pip install cmeel-boost==1.87.0.1  # not sure which version securely works
+    pip install mediapipe==0.10.13
+    pip install -e ".[example]"  # ignore sapien version requirement here
+
+    pip install mujoco
+    ```
+
+### Usage
+```shell
+python example/vector_retargeting/show_realtime_retargeting.py --robot-name allegro --retargeting-type dexpilot --hand-type right
+```
+
+
 <div align="center">
-  <h1 align="center"> Dex Retargeting </h1>
+  <h1 align="center"> 「Original」 Dex Retargeting </h1>
   <h3 align="center">
     Various retargeting optimizers to translate human hand motion to robot hand motion.
   </h3>

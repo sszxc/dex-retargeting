@@ -42,7 +42,6 @@ example = [
     "tqdm",
     "opencv-python",
     "mediapipe",
-    "sapien==3.0.0b0",
     "loguru",
 ]
 
