@@ -60,9 +60,7 @@ def process_detection_and_retargeting(
 
     logger.info("进程一：开始处理图像和重定向")
 
-
     board = RerunBoard(f"RerunTest_{time.strftime('%m_%d_%H_%M', time.localtime())}")
-
 
     while cap.isOpened():
         # 以每帧为单位重新开始计时
@@ -78,7 +76,7 @@ def process_detection_and_retargeting(
         timer.check("preprocess")
 
         # 检测手部
-        _, joint_pos, keypoint_2d, _, keypoint_3d = detector.detect(rgb)
+        _, joint_pos, keypoint_2d, mediapipe_wrist_rot, keypoint_3d = detector.detect(rgb)
         timer.check("detect")
 
         # 显示检测结果
@@ -87,29 +85,29 @@ def process_detection_and_retargeting(
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
+        # 记录结果到 rerun
         if joint_pos is not None:
-            num_box, joint_pos, keypoint_2d, _, keypoint_3d = detector.detect(rgb)
+            # 关键点
             for i in range(keypoint_3d.shape[0]):
                 board.log(
-                    f"3d_points/keypoint_{i}",
-                    rr.Points3D(positions=[keypoint_3d[i]], colors=[[255, 0, 0]], radii=0.005),
+                    f"3d_points/keypoint/{i}",
+                    rr.Points3D(positions=[keypoint_3d[i]], colors=[[255, 0, 0]], radii=0.005, labels=f"{i}"),
                 )  # , static=True
+            # 连接线
             mp_hands = mp.solutions.hands
             hand_connections = mp_hands.HAND_CONNECTIONS
             for pair in hand_connections:
                 board.log(
-                    f"3d_points/connection_{pair}",
+                    f"3d_points/connection/{pair}",
                     rr.Arrows3D(origins=[keypoint_3d[pair[0]]], vectors=[keypoint_3d[pair[1]] - keypoint_3d[pair[0]]], colors=[[0, 255, 0]]),
                 )
-
-            # board.log(
-            #     "3d_points/force",
-            #     rr.Arrows3D(origins=[0, 0, 0], vectors=[point_3d], colors=[[0, 255, 0]]),
-            # )  # , static=True
-            # board.log(
-            #     "3d_points/pos_3d",
-            #     rr.Transform3D(translation=point_3d, mat3x3=np.random.rand(3, 3)),
-            # )
+            # 手腕坐标系
+            board.log_axes(
+                translation=keypoint_3d[0],
+                rotation=mediapipe_wrist_rot,
+                root="3d_points",
+                name="wrist_rot",
+            )
 
         # 执行重定向
         if joint_pos is None:
@@ -120,43 +118,46 @@ def process_detection_and_retargeting(
             except:
                 pass
         else:
-            pass
-            # retargeting_type = retargeting.optimizer.retargeting_type
-            # indices = retargeting.optimizer.target_link_human_indices
-            # if retargeting_type == "POSITION":
-            #     ref_value = joint_pos[indices, :]
-            # else:
-            #     origin_indices = indices[0, :]
-            #     task_indices = indices[1, :]
-            #     ref_value = joint_pos[task_indices, :] - joint_pos[origin_indices, :]
+            # 从人手上拿位置信息
+            retargeting_type = retargeting.optimizer.retargeting_type
+            indices = retargeting.optimizer.target_link_human_indices
+            if retargeting_type == "POSITION":
+                ref_value = joint_pos[indices, :]  # [ 4,  8, 12, 16,  2,  6, 10, 14] 四个手指指尖、中间关节的绝对位置
+            else:
+                origin_indices = indices[0, :]
+                task_indices = indices[1, :]
+                ref_value = joint_pos[task_indices, :] - joint_pos[origin_indices, :]  # 第二组 index 减去 第一组 index 的相对位置
+            # for allegro & vector: array([[ 0,  0,  0,  0], [ 4,  8, 12, 16]]), ref_value 计算了 Thumb Tip, Index Tip, Middle Tip, Ring Tip 的相对根部的位置
+            # for allegro & dexpilot: array([[ 8, 12, 16, 12, 16, 16,  0,  0,  0,  0], [ 4,  4,  4,  8,  8, 12,  4,  8, 12, 16]]), ref_value 计算四个指尖和手腕、四个指尖之间的相对位置
 
-            # # 执行重定向
-            # qpos = retargeting.retarget(ref_value)
-            # timer.check("retarget")
+            # breakpoint()
+            # 执行重定向
+            qpos = retargeting.retarget(ref_value)
+            timer.check("retarget")
 
-            # # 记录每一时刻的关节角（debug级别）
-            # logger.debug(f"Joint angles: {qpos.round(2)}")
+            # 记录每一时刻的关节角（debug级别）
+            logger.debug(f"Joint angles: {qpos.round(2)}")
 
-            # # 记录本帧关键步骤的耗时（debug 级别）
-            # try:
-            #     preprocess_time = timer.times["preprocess"][-1]
-            #     detect_time = timer.times["detect"][-1]
-            #     retarget_time = timer.times["retarget"][-1]
-            #     logger.debug(
-            #         "Timing (s) - preprocess: {:.4f}, detect: {:.4f}, retarget: {:.4f}",
-            #         preprocess_time,
-            #         detect_time,
-            #         retarget_time,
-            #     )
-            # except Exception:
-            #     # 计时信息仅用于调试分析，任何异常都不应影响主流程
-            #     pass
+            # 记录本帧关键步骤的耗时（debug 级别）
+            try:
+                preprocess_time = timer.times["preprocess"][-1]
+                detect_time = timer.times["detect"][-1]
+                retarget_time = timer.times["retarget"][-1]
+                logger.debug(
+                    "Timing (s) - preprocess: {:.4f}, detect: {:.4f}, retarget: {:.4f}",
+                    preprocess_time,
+                    detect_time,
+                    retarget_time,
+                )
+            except Exception:
+                # 计时信息仅用于调试分析，任何异常都不应影响主流程
+                pass
 
-            # # 将关节角放入队列，供进程二使用
-            # try:
-            #     qpos_queue.put_nowait(qpos)
-            # except:
-            #     pass  # 队列满了，跳过这一帧，保持实时性
+            # 将关节角放入队列，供进程二使用
+            try:
+                qpos_queue.put_nowait(qpos)
+            except:
+                pass  # 队列满了，跳过这一帧，保持实时性
 
         time.sleep(1 / 30.0)
 

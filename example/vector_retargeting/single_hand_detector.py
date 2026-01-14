@@ -172,18 +172,16 @@ class SingleHandDetector:
         :param points: keypoint3 detected from MediaPipe detector. Order: [wrist, index, middle, pinky]
         :return: the coordinate frame of wrist in MANO convention
         x 从 中指指根 指向 手腕
-        y 从 手掌心 指向 手背 (normal)
         z 从 中指 指向 食指/大拇指一侧
-        注意这里没有用小指，和注释不同
-        此外 SVD 是用于 >3 个点的情况，这里只有 3 个可以直接叉乘
+        y 是 normal （手掌心 <-> 手背）左右手不同
         """
         assert keypoint_3d_array.shape == (21, 3)
-        points = keypoint_3d_array[[0, 5, 9], :]
+        points = keypoint_3d_array[[0, 5, 9], :]  # 59 分别食指中指，注意这里没有用小指，和注释不同
 
         # Compute vector from palm to the first joint of middle finger
         x_vector = points[0] - points[2]
 
-        # Normal fitting with SVD
+        # Normal fitting with SVD  注意 SVD 是用于 >3 个点的情况，这里只有 3 个可以直接叉乘
         points = points - np.mean(points, axis=0, keepdims=True)
         u, s, v = np.linalg.svd(points)
 
