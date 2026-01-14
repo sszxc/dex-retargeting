@@ -90,7 +90,7 @@ def process_detection_and_retargeting(
             # 关键点
             for i in range(keypoint_3d.shape[0]):
                 board.log(
-                    f"3d_points/keypoint/{i}",
+                    f"human/keypoint/{i}",
                     rr.Points3D(positions=[keypoint_3d[i]], colors=[[255, 0, 0]], radii=0.005, labels=f"{i}"),
                 )  # , static=True
             # 连接线
@@ -98,14 +98,14 @@ def process_detection_and_retargeting(
             hand_connections = mp_hands.HAND_CONNECTIONS
             for pair in hand_connections:
                 board.log(
-                    f"3d_points/connection/{pair}",
+                    f"human/connection/{pair}",
                     rr.Arrows3D(origins=[keypoint_3d[pair[0]]], vectors=[keypoint_3d[pair[1]] - keypoint_3d[pair[0]]], colors=[[0, 255, 0]]),
                 )
             # 手腕坐标系
             board.log_axes(
                 translation=keypoint_3d[0],
                 rotation=mediapipe_wrist_rot,
-                root="3d_points",
+                root="human",
                 name="wrist_rot",
             )
 
@@ -130,13 +130,45 @@ def process_detection_and_retargeting(
             # for allegro & vector: array([[ 0,  0,  0,  0], [ 4,  8, 12, 16]]), ref_value 计算了 Thumb Tip, Index Tip, Middle Tip, Ring Tip 的相对根部的位置
             # for allegro & dexpilot: array([[ 8, 12, 16, 12, 16, 16,  0,  0,  0,  0], [ 4,  4,  4,  8,  8, 12,  4,  8, 12, 16]]), ref_value 计算四个指尖和手腕、四个指尖之间的相对位置
 
-            # breakpoint()
-            # 执行重定向
-            qpos = retargeting.retarget(ref_value)
+            # 执行重定向（返回完整的 robot_qpos，包括固定关节，已应用适配器）
+            robot_qpos = retargeting.retarget(ref_value)
             timer.check("retarget")
 
-            # 记录每一时刻的关节角（debug级别）
-            logger.debug(f"Joint angles: {qpos.round(2)}")
+            # 获取机器人关节的3D位置并可视化
+            robot = retargeting.optimizer.robot
+
+            # 计算所有关节的3D位置
+            joint_positions = robot.get_all_joint_positions(robot_qpos)
+            joint_positions = joint_positions @ np.linalg.inv(detector.operator2mano) @ mediapipe_wrist_rot.T
+
+            # 获取关节连接关系（方法内部有缓存，第一次调用后会自动缓存）
+            joint_connections = robot.get_joint_connections()
+
+            # 可视化关节位置到 rerun
+            for i in range(joint_positions.shape[0]):
+                board.log(
+                    f"robot/joint/{i}",
+                    rr.Points3D(
+                        positions=[joint_positions[i]], 
+                        colors=[[0, 0, 255]], 
+                        radii=0.005, 
+                        labels=f"{i}"
+                    ),
+                )
+
+            # 可视化连接线到 rerun
+            for pair in joint_connections:
+                assert pair[0] < joint_positions.shape[0] and pair[1] < joint_positions.shape[0], f"pair: {pair} is out of range"
+                board.log(
+                    f"robot/link/{pair}",
+                    rr.Arrows3D(
+                        origins=[joint_positions[pair[0]]], 
+                        vectors=[joint_positions[pair[1]] - joint_positions[pair[0]]], 
+                        colors=[[255, 255, 0]]
+                    ),
+                )
+
+            logger.debug(f"Joint angles: {robot_qpos.round(2)}")
 
             # 记录本帧关键步骤的耗时（debug 级别）
             try:
@@ -153,9 +185,9 @@ def process_detection_and_retargeting(
                 # 计时信息仅用于调试分析，任何异常都不应影响主流程
                 pass
 
-            # 将关节角放入队列，供进程二使用
+            # 将关节角放入队列，供进程二使用（使用目标关节的位置）
             try:
-                qpos_queue.put_nowait(qpos)
+                qpos_queue.put_nowait(robot_qpos)
             except:
                 pass  # 队列满了，跳过这一帧，保持实时性
 
