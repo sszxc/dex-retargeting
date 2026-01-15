@@ -35,6 +35,8 @@ class RerunBoard:
             self.get_rrt_board()
         elif template == "image_image_figure":
             self.get_image_image_figure_board()
+        elif template == "dex_retargeting":
+            self.get_dex_retargeting_board()
         else:
             # raise ValueError(f"template {template} not supported")
             pass
@@ -44,6 +46,16 @@ class RerunBoard:
             return getattr(rr, name)  # 转发到 rerun 的方法
         else:
             raise AttributeError(f"'{name}' not found in rerun module.")
+
+    def get_dex_retargeting_board(self):
+        rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
+        blueprint = rrb.Blueprint(
+            rrb.Spatial3DView(
+                origin="/world",
+
+            ),
+        )
+        rr.send_blueprint(blueprint)
 
     def get_3D_view_board(self):
         blueprint = rrb.Blueprint(

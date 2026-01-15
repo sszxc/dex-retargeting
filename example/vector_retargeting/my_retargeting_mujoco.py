@@ -20,12 +20,14 @@ from dex_retargeting.constants import (
 )
 from dex_retargeting.retargeting_config import RetargetingConfig
 from single_hand_detector import SingleHandDetector
+from leap_motion_detector import LeapMotionHandDetector
 
 from utils.timer import Timer
 from utils.opencv_cam import find_camera_with_resolution
 from utils.rerun_board import RerunBoard
 import rerun as rr
 import mediapipe as mp
+import leap
 
 
 def process_detection_and_retargeting(
@@ -33,46 +35,63 @@ def process_detection_and_retargeting(
     robot_dir: str,
     config_path: str,
     camera_path: Optional[str] = None,
+    input_source: str = "webcam",
 ):
     """
     进程一：从相机获取图像、处理帧、检测手部、执行重定向、存储关节角到队列
+    
+    Args:
+        input_source: 输入源类型，"webcam" 或 "leap_motion"
     """
     RetargetingConfig.set_default_urdf_dir(str(robot_dir))
     logger.info(f"进程一：开始重定向计算，配置文件 {config_path}")
     retargeting = RetargetingConfig.load_from_file(config_path).build()
 
     hand_type = "Right" if "right" in config_path.lower() else "Left"
-    detector = SingleHandDetector(hand_type=hand_type, selfie=False)
+    
+    # 根据输入源选择检测器
+    if input_source == "leap_motion":
+        detector = LeapMotionHandDetector(hand_type=hand_type, tracking_mode=leap.TrackingMode.Desktop)
+        cap = None  # Leap Motion 不需要 OpenCV 相机
+        logger.info("使用 Leap Motion 作为输入源")
+    else:
+        detector = SingleHandDetector(hand_type=hand_type, selfie=False)
+        # 打开相机
+        if camera_path is None:
+            camera_id = find_camera_with_resolution(target_width=1280, target_height=720)
+            cap = cv2.VideoCapture(camera_id)
+        else:
+            cap = cv2.VideoCapture(camera_path)
+
+        if not cap.isOpened():
+            logger.error("无法打开相机")
+            return
+        logger.info("使用 Webcam 作为输入源")
 
     # 计时器：用于统计关键步骤的耗时（仅用于 debug 分析）
     timer = Timer(enabled=True)
 
-    # 打开相机
-    if camera_path is None:
-        camera_id = find_camera_with_resolution(target_width=1280, target_height=720)
-        cap = cv2.VideoCapture(camera_id)
-    else:
-        cap = cv2.VideoCapture(camera_path)
+    board = RerunBoard(f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
+                       template="dex_retargeting")
 
-    if not cap.isOpened():
-        logger.error("无法打开相机")
-        return
-
-    logger.info("进程一：开始处理图像和重定向")
-
-    board = RerunBoard(f"RerunTest_{time.strftime('%m_%d_%H_%M', time.localtime())}")
-
-    while cap.isOpened():
+    while True:
         # 以每帧为单位重新开始计时
         timer.start()
 
-        success, bgr = cap.read()
-        if not success:
-            time.sleep(1 / 30.0)
-            continue
-
-        # 处理帧：BGR转RGB
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        # 根据输入源获取数据
+        if input_source == "leap_motion":
+            # Leap Motion: 直接检测，不需要读取图像
+            rgb = None
+            bgr = None
+        else:
+            # Webcam: 读取图像
+            success, bgr = cap.read()
+            if not success:
+                time.sleep(1 / 30.0)
+                continue
+            # 处理帧：BGR转RGB
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        
         timer.check("preprocess")
 
         # 检测手部
@@ -80,33 +99,65 @@ def process_detection_and_retargeting(
         timer.check("detect")
 
         # 显示检测结果
-        bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d, style="default")
-        cv2.imshow("realtime_retargeting_demo", bgr)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+        if input_source == "webcam" and bgr is not None:
+            # Webcam 模式：在原始图像上绘制
+            bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d, style="default")
+            cv2.imshow("realtime_retargeting_demo", bgr)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        elif input_source == "leap_motion":
+            # Leap Motion 模式：创建虚拟画布并绘制3D关键点
+            if keypoint_3d is not None:
+                # 创建一个画布用于可视化
+                vis_image = detector.draw_skeleton_on_image(None, keypoint_3d, style="default")
+                cv2.imshow("realtime_retargeting_demo", vis_image)
+            else:
+                # 如果没有检测到手部，显示空白画布
+                vis_image = np.zeros((720, 1280, 3), dtype=np.uint8)
+                cv2.putText(
+                    vis_image,
+                    f"Leap Motion - Waiting for {hand_type} hand...",
+                    (10, 360),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (255, 255, 255),
+                    2,
+                )
+                cv2.imshow("realtime_retargeting_demo", vis_image)
+            
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
         # 记录结果到 rerun
         if joint_pos is not None:
             # 关键点
             for i in range(keypoint_3d.shape[0]):
                 board.log(
-                    f"human/keypoint/{i}",
-                    rr.Points3D(positions=[keypoint_3d[i]], colors=[[255, 0, 0]], radii=0.005, labels=f"{i}"),
+                    f"world/human/keypoint/{i}",
+                    rr.Points3D(positions=[keypoint_3d[i]],
+                                colors=[[255, 0, 0]], radii=0.005,
+                                # labels=f"{i}",
+                    ),
                 )  # , static=True
             # 连接线
             mp_hands = mp.solutions.hands
             hand_connections = mp_hands.HAND_CONNECTIONS
             for pair in hand_connections:
                 board.log(
-                    f"human/connection/{pair}",
-                    rr.Arrows3D(origins=[keypoint_3d[pair[0]]], vectors=[keypoint_3d[pair[1]] - keypoint_3d[pair[0]]], colors=[[0, 255, 0]]),
+                    f"world/human/connection/{pair}",
+                    rr.Arrows3D(origins=[keypoint_3d[pair[0]]],
+                                vectors=[keypoint_3d[pair[1]] - keypoint_3d[pair[0]]],
+                                colors=[[0, 255, 0]],
+                                # labels=f"{pair}",
+                    ),
                 )
             # 手腕坐标系
             board.log_axes(
                 translation=keypoint_3d[0],
                 rotation=mediapipe_wrist_rot,
-                root="human",
+                root="world/human",
                 name="wrist_rot",
+                axis_size=0.05,
             )
 
         # 执行重定向
@@ -121,9 +172,24 @@ def process_detection_and_retargeting(
             # 从人手上拿位置信息
             retargeting_type = retargeting.optimizer.retargeting_type
             indices = retargeting.optimizer.target_link_human_indices
+            
             if retargeting_type == "POSITION":
-                ref_value = joint_pos[indices, :]  # [ 4,  8, 12, 16,  2,  6, 10, 14] 四个手指指尖、中间关节的绝对位置
+                # Position retargeting: 使用绝对位置
+                if input_source == "leap_motion":
+                    # 对于 Leap Motion，使用全局位置（keypoint_3d 是全局位置，单位：米）
+                    # 需要转换到 MANO 坐标系，以便与重定向系统兼容
+                    # 注意：这里使用全局位置，不需要减去手腕位置
+                    keypoint_3d_mano = keypoint_3d @ mediapipe_wrist_rot @ detector.operator2mano
+                    ref_value = keypoint_3d_mano[indices, :]  # 使用全局位置（已转换到 MANO 坐标系）
+                else:
+                    # 对于 webcam，使用相对位置（joint_pos 已经是相对位置，相对于手腕）
+                    # 但 position retargeting 需要绝对位置，所以需要加上手腕位置
+                    # 注意：joint_pos 是相对于手腕的，但 position retargeting 需要绝对位置
+                    # 由于 joint_pos 已经是相对于手腕的，而 position retargeting 通常也使用相对位置
+                    # 这里保持原有逻辑，使用 joint_pos（相对位置）
+                    ref_value = joint_pos[indices, :]
             else:
+                # Vector retargeting: 使用相对位置
                 origin_indices = indices[0, :]
                 task_indices = indices[1, :]
                 ref_value = joint_pos[task_indices, :] - joint_pos[origin_indices, :]  # 第二组 index 减去 第一组 index 的相对位置
@@ -147,12 +213,12 @@ def process_detection_and_retargeting(
             # 可视化关节位置到 rerun
             for i in range(joint_positions.shape[0]):
                 board.log(
-                    f"robot/joint/{i}",
+                    f"world/robot/joint/{robot.joint_names[i]}",
                     rr.Points3D(
                         positions=[joint_positions[i]], 
                         colors=[[0, 0, 255]], 
                         radii=0.005, 
-                        labels=f"{i}"
+                        # labels=f"{i}"
                     ),
                 )
 
@@ -160,7 +226,7 @@ def process_detection_and_retargeting(
             for pair in joint_connections:
                 assert pair[0] < joint_positions.shape[0] and pair[1] < joint_positions.shape[0], f"pair: {pair} is out of range"
                 board.log(
-                    f"robot/link/{pair}",
+                    f"world/robot/link/{pair}",
                     rr.Arrows3D(
                         origins=[joint_positions[pair[0]]], 
                         vectors=[joint_positions[pair[1]] - joint_positions[pair[0]]], 
@@ -193,8 +259,12 @@ def process_detection_and_retargeting(
 
         time.sleep(1 / 30.0)
 
-    cap.release()
-    cv2.destroyAllWindows()
+    # 清理资源
+    if cap is not None:
+        cap.release()
+        cv2.destroyAllWindows()
+    if hasattr(detector, 'close'):
+        detector.close()
     logger.info("进程一：结束")
 
 
@@ -346,6 +416,8 @@ def main(
     retargeting_type: RetargetingType,
     hand_type: HandType,
     camera_path: Optional[str] = None,
+    input_source: str = "webcam",
+    config_path_override: Optional[str] = None,
 ):
     """
     Detects the human hand pose from a video and translates the human pose trajectory into a robot pose trajectory.
@@ -357,8 +429,13 @@ def main(
             Please note that retargeting is specific to the same type of hand: a left robot hand can only be retargeted
             to another left robot hand, and the same applies for the right hand.
         camera_path: the device path to feed to opencv to open the web camera. It will use 0 by default.
+        input_source: Input source type, "webcam" (default) or "leap_motion".
+        config_path_override: Optional custom config path. If provided, will override the default config path.
     """
-    config_path = get_default_config_path(robot_name, retargeting_type, hand_type)
+    if config_path_override is not None:
+        config_path = Path(config_path_override)
+    else:
+        config_path = get_default_config_path(robot_name, retargeting_type, hand_type)
     robot_dir = (
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
     )
@@ -366,12 +443,12 @@ def main(
     # 创建队列用于传递关节角（从进程一到进程二）
     qpos_queue = multiprocessing.Queue(maxsize=2)  # 只保留最新2个关节角数据
 
-    process_detection_and_retargeting(qpos_queue, str(robot_dir), str(config_path), camera_path)
+    process_detection_and_retargeting(qpos_queue, str(robot_dir), str(config_path), camera_path, input_source)
 
     # # 进程一：检测和重定向
     # detection_process = multiprocessing.Process(
     #     target=process_detection_and_retargeting,
-    #     args=(qpos_queue, str(robot_dir), str(config_path), camera_path),
+    #     args=(qpos_queue, str(robot_dir), str(config_path), camera_path, input_source),
     # )
 
     # # 进程二：可视化
