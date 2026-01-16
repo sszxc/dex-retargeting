@@ -6,11 +6,10 @@ from typing import Optional
 
 import cv2
 import numpy as np
-import sapien
 import tyro
 from loguru import logger
-from sapien.asset import create_dome_envmap
-from sapien.utils import Viewer
+import mujoco
+import mujoco.viewer
 
 from dex_retargeting.constants import (
     RobotName,
@@ -25,9 +24,19 @@ from leap_motion_detector import LeapMotionHandDetector
 from utils.timer import Timer
 from utils.opencv_cam import find_camera_with_resolution
 from utils.rerun_board import RerunBoard
+from utils.misc_utils import DummyClass
 import rerun as rr
 import mediapipe as mp
 import leap
+
+
+CAMERA2TABLE = np.array(
+    [
+        [1, 0, 0],
+        [0, 0, -1],
+        [0, 1, 0],
+    ]
+)
 
 
 def process_detection_and_retargeting(
@@ -48,7 +57,7 @@ def process_detection_and_retargeting(
     retargeting = RetargetingConfig.load_from_file(config_path).build()
 
     hand_type = "Right" if "right" in config_path.lower() else "Left"
-    
+
     # 根据输入源选择检测器
     if input_source == "leap_motion":
         detector = LeapMotionHandDetector(hand_type=hand_type, tracking_mode=leap.TrackingMode.Desktop)
@@ -68,11 +77,13 @@ def process_detection_and_retargeting(
             return
         logger.info("使用 Webcam 作为输入源")
 
-    # 计时器：用于统计关键步骤的耗时（仅用于 debug 分析）
-    timer = Timer(enabled=True)
-
+    # rerun board
     board = RerunBoard(f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
                        template="dex_retargeting")
+    # board = DummyClass()
+
+    # 计时器：用于统计关键步骤的耗时（仅用于 debug 分析）
+    timer = Timer(enabled=True)
 
     while True:
         # 以每帧为单位重新开始计时
@@ -91,7 +102,7 @@ def process_detection_and_retargeting(
                 continue
             # 处理帧：BGR转RGB
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        
+
         timer.check("preprocess")
 
         # 检测手部
@@ -124,7 +135,7 @@ def process_detection_and_retargeting(
                     2,
                 )
                 cv2.imshow("realtime_retargeting_demo", vis_image)
-            
+
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -172,22 +183,10 @@ def process_detection_and_retargeting(
             # 从人手上拿位置信息
             retargeting_type = retargeting.optimizer.retargeting_type
             indices = retargeting.optimizer.target_link_human_indices
-            
+
             if retargeting_type == "POSITION":
                 # Position retargeting: 使用绝对位置
-                if input_source == "leap_motion":
-                    # 对于 Leap Motion，使用全局位置（keypoint_3d 是全局位置，单位：米）
-                    # 需要转换到 MANO 坐标系，以便与重定向系统兼容
-                    # 注意：这里使用全局位置，不需要减去手腕位置
-                    keypoint_3d_mano = keypoint_3d @ mediapipe_wrist_rot @ detector.operator2mano
-                    ref_value = keypoint_3d_mano[indices, :]  # 使用全局位置（已转换到 MANO 坐标系）
-                else:
-                    # 对于 webcam，使用相对位置（joint_pos 已经是相对位置，相对于手腕）
-                    # 但 position retargeting 需要绝对位置，所以需要加上手腕位置
-                    # 注意：joint_pos 是相对于手腕的，但 position retargeting 需要绝对位置
-                    # 由于 joint_pos 已经是相对于手腕的，而 position retargeting 通常也使用相对位置
-                    # 这里保持原有逻辑，使用 joint_pos（相对位置）
-                    ref_value = joint_pos[indices, :]
+                ref_value = joint_pos[indices, :]
             else:
                 # Vector retargeting: 使用相对位置
                 origin_indices = indices[0, :]
@@ -205,7 +204,6 @@ def process_detection_and_retargeting(
 
             # 计算所有关节的3D位置
             joint_positions = robot.get_all_joint_positions(robot_qpos)
-            joint_positions = joint_positions @ np.linalg.inv(detector.operator2mano) @ mediapipe_wrist_rot.T
 
             # 获取关节连接关系（方法内部有缓存，第一次调用后会自动缓存）
             joint_connections = robot.get_joint_connections()
@@ -213,7 +211,7 @@ def process_detection_and_retargeting(
             # 可视化关节位置到 rerun
             for i in range(joint_positions.shape[0]):
                 board.log(
-                    f"world/robot/joint/{robot.joint_names[i]}",
+                    f"world/robot/joint/joint_{i}",
                     rr.Points3D(
                         positions=[joint_positions[i]], 
                         colors=[[0, 0, 255]], 
@@ -251,13 +249,17 @@ def process_detection_and_retargeting(
                 # 计时信息仅用于调试分析，任何异常都不应影响主流程
                 pass
 
-            # 将关节角放入队列，供进程二使用（使用目标关节的位置）
             try:
-                qpos_queue.put_nowait(robot_qpos)
+                qpos_queue.put_nowait(
+                    {
+                        "qpos": robot_qpos,
+                    }
+                )
             except:
                 pass  # 队列满了，跳过这一帧，保持实时性
 
-        time.sleep(1 / 30.0)
+        # time.sleep(1 / 30.0)
+        time.sleep(1 / 10.0)
 
     # 清理资源
     if cap is not None:
@@ -268,9 +270,94 @@ def process_detection_and_retargeting(
     logger.info("进程一：结束")
 
 
-def process_visualization(
-    qpos_queue: multiprocessing.Queue, robot_dir: str, config_path: str
-):
+def generate_test_qpos(dim_idx: int, progress: float, total_dim: int = 22) -> np.ndarray:
+    """
+    生成测试用的 qpos 向量，指定维度按照正弦值波动两个来回（4π周期）
+    
+    Args:
+        dim_idx: 要测试的维度索引
+        progress: 当前维度测试的进度 [0, 1]，0表示开始，1表示结束
+        total_dim: 总维度数，默认22（6+16）
+    
+    Returns:
+        qpos: 测试用的关节角度向量，形状为 (total_dim,)
+              只有指定维度有正弦值，其他维度为0
+    """
+    # 计算正弦值：2个来回 = 4π，所以角度是 4π * progress
+    angle = 4 * np.pi * progress
+    sin_value = np.sin(angle)
+    
+    # 创建 qpos 数组：当前测试维度使用正弦值，其他维度为0
+    qpos = np.zeros(total_dim, dtype=np.float32)
+    qpos[dim_idx] = sin_value
+    
+    return qpos
+
+
+def process_test_qpos(qpos_queue: multiprocessing.Queue):
+    """
+    测试子进程：生成测试用的 qpos 数据，用于测试主进程的 mujoco
+    
+    每三秒测试一个维度（共22个维度：6+16），每个维度按照正弦值波动两个来回（4π周期），
+    共测试 3*22=66 秒，然后循环。
+    
+    Args:
+        qpos_queue: 用于传递 qpos 数据的队列
+    """
+    logger.info("测试子进程：开始生成测试 qpos 数据")
+    
+    TOTAL_DIM = 22  # 6 + 16 个维度
+    DIM_TEST_DURATION = 3.0  # 每个维度测试3秒
+    CYCLE_COUNT = 2  # 每个维度波动2个来回（4π）
+    UPDATE_RATE = 30.0  # 更新频率 30Hz
+    UPDATE_INTERVAL = 1.0 / UPDATE_RATE
+    
+    while True:
+        # 循环测试所有维度
+        for dim_idx in range(TOTAL_DIM):
+            dim_start_time = time.time()
+            logger.info(f"开始测试维度 {dim_idx}/{TOTAL_DIM-1}")
+            
+            # 在当前维度的3秒测试时间内循环
+            while True:
+                current_time = time.time()
+                elapsed = current_time - dim_start_time
+                
+                # 如果超过3秒，切换到下一个维度
+                if elapsed >= DIM_TEST_DURATION:
+                    break
+                
+                # 计算当前维度在3秒内的进度 [0, 1]
+                progress = elapsed / DIM_TEST_DURATION
+                
+                # 使用核心函数生成 qpos
+                qpos = generate_test_qpos(dim_idx, progress, TOTAL_DIM)
+                
+                # 计算正弦值用于日志输出
+                sin_value = qpos[dim_idx]
+                
+                # 输出日志
+                logger.info(f"测试维度 {dim_idx}, 值: {sin_value:.4f}, 进度: {progress*100:.1f}%")
+                
+                # 将 qpos 放入队列
+                try:
+                    qpos_queue.put_nowait(
+                        {
+                            "qpos": qpos,
+                        }
+                    )
+                except:
+                    pass  # 队列满了，跳过这一帧，保持实时性
+                
+                # 控制更新频率
+                time.sleep(UPDATE_INTERVAL)
+            
+            logger.info(f"完成测试维度 {dim_idx}/{TOTAL_DIM-1}")
+        
+        logger.info("完成一轮所有维度测试，开始下一轮循环")
+
+
+def process_visualization_SAPIEN(qpos_queue: multiprocessing.Queue, robot_dir: str, config_path: str):
     """
     进程二：初始化仿真器以及渲染，读取关节角，更新状态，渲染
     """
@@ -440,10 +527,12 @@ def main(
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
     )
 
-    # 创建队列用于传递关节角（从进程一到进程二）
     qpos_queue = multiprocessing.Queue(maxsize=2)  # 只保留最新2个关节角数据
 
-    process_detection_and_retargeting(qpos_queue, str(robot_dir), str(config_path), camera_path, input_source)
+    # process_detection_and_retargeting(
+    #     qpos_queue, str(robot_dir), str(config_path), camera_path, input_source
+    # )
+    # quit()
 
     # # 进程一：检测和重定向
     # detection_process = multiprocessing.Process(
@@ -463,7 +552,119 @@ def main(
     # detection_process.join()
     # visualization_process.join()
 
-    print("done")
+    # ---------------- Mujoco 可视化（必须在主线程中运行） ----------------
+    # 加载 Mujoco 场景：基于 teleop_scene_left.xml
+    project_root = Path(__file__).absolute().parent.parent.parent
+    mj_xml_path = (
+        project_root / "src" / "mujoco" / "wonik_allegro" / "teleop_scene_left.xml"
+    )
+    if not mj_xml_path.exists():
+        raise FileNotFoundError(f"Mujoco 场景文件不存在: {mj_xml_path}")
+
+    model = mujoco.MjModel.from_xml_path(str(mj_xml_path))
+    data = mujoco.MjData(model)
+
+    # 控制向量：前 6 个为 hand_root 的 6DOF（tx, ty, tz, rx, ry, rz），后 16 个为 Allegro 手指关节
+    ROOT_CTRL_DIM = 6
+    FINGER_CTRL_DIM = 16
+    assert (
+        model.nu == ROOT_CTRL_DIM + FINGER_CTRL_DIM
+    ), "Mujoco 模型中的 actuator 数量不等于 6DOF 根关节 + 16 个手指关节"
+
+    root_slice = slice(0, ROOT_CTRL_DIM)
+    finger_slice = slice(ROOT_CTRL_DIM, ROOT_CTRL_DIM + FINGER_CTRL_DIM)
+
+    # 用于保存最新一帧的目标
+    latest_qpos = None
+    latest_wrist_pos = None
+    latest_wrist_rot = None
+
+    # 简单的旋转矩阵 -> ZYX 欧拉角 (rz, ry, rx)，用于驱动 hand_root 的转动关节
+    def mat_to_euler_zyx(R: np.ndarray):
+        """将 3x3 旋转矩阵转换为 ZYX 欧拉角 (rz, ry, rx)。"""
+        sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+        singular = sy < 1e-6
+        if not singular:
+            rx = np.arctan2(R[2, 1], R[2, 2])
+            ry = np.arctan2(-R[2, 0], sy)
+            rz = np.arctan2(R[1, 0], R[0, 0])
+        else:
+            rx = np.arctan2(-R[1, 2], R[1, 1])
+            ry = np.arctan2(-R[2, 0], sy)
+            rz = 0.0
+        return rz, ry, rx
+
+    # 子进程：检测和重定向（子进程，避免阻塞主线程的渲染）
+    detection_process = multiprocessing.Process(
+        target=process_detection_and_retargeting,
+        args=(qpos_queue, str(robot_dir), str(config_path), camera_path, input_source),
+    )
+    # detection_process = multiprocessing.Process(
+    #     target=process_test_qpos,
+    #     args=(qpos_queue,),
+    # )
+    detection_process.start()
+    logger.info("检测与重定向子进程已启动")
+
+    # 启动被动 viewer，在主线程中进行物理仿真与渲染
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+        logger.info("Mujoco viewer 已启动")
+        sim_start = time.time()
+        control_rate_hz = 60.0
+        control_interval = 1.0 / control_rate_hz
+        last_control_time = time.time()
+
+        while viewer.is_running():
+            now = time.time()
+
+            # 从队列中取出最新的目标（关节角 + 手腕姿态）
+            msg = None
+            while True:
+                try:
+                    msg = qpos_queue.get_nowait()
+                except Empty:
+                    break
+
+            if msg is not None:
+                if isinstance(msg, dict):
+                    latest_qpos = msg.get("qpos", None)
+                    latest_wrist_pos = msg.get("wrist_pos", None)
+                    latest_wrist_rot = msg.get("wrist_rot", None)
+
+            # 以固定频率更新控制目标（角度目标），Mujoco 继续做物理仿真
+            if now - last_control_time >= control_interval:
+                # 手指关节目标：使用检测得到的 robot_qpos 作为期望位置
+                if latest_qpos is not None:
+                    q = np.asarray(latest_qpos).reshape(-1)
+                    data.ctrl[0] = q[0]
+                    data.ctrl[1] = q[1]
+                    data.ctrl[2] = q[2] - 0.6
+
+                    data.ctrl[3] = q[3]  # - np.pi
+                    data.ctrl[4] = q[4] - np.pi
+                    data.ctrl[5] = q[5]  # - np.pi
+
+                    data.ctrl[14:18] = q[6:10]  # 小指
+                    data.ctrl[18:22] = q[10:14]  # 拇指
+                    data.ctrl[10:14] = q[14:18]  # 中指
+                    data.ctrl[6:10] = q[18:22]  # 食指
+
+                last_control_time = now
+
+            # 按真实时间步长推进物理仿真
+            while data.time < now - sim_start:
+                mujoco.mj_step(model, data)
+
+            # 同步 viewer
+            viewer.sync()
+
+        logger.info("Mujoco viewer 已关闭，准备结束子进程")
+
+    # 关闭检测进程
+    if detection_process.is_alive():
+        detection_process.terminate()
+        detection_process.join()
+    logger.info("检测与重定向子进程已结束")
 
 
 if __name__ == "__main__":

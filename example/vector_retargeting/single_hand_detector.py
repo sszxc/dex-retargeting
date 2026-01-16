@@ -121,13 +121,13 @@ class SingleHandDetector:
         num_box = len(results.multi_hand_landmarks)  # 检测到的手数量
 
         # 解析3D关键点并转换为numpy数组
-        keypoint_3d_array = self.parse_keypoint_3d(keypoint_3d)
-        # 将坐标原点移到手腕（索引0）注意如果不进行平移，原点在中指指根附近
-        keypoint_3d_array = keypoint_3d_array - keypoint_3d_array[0:1, :]
+        keypoint_3d_array_global = self.parse_keypoint_3d(keypoint_3d)
+        # 将坐标原点移到手腕（索引0）注意如果不进行平移，原点在中指指根附近(也是固定的，并没有空间位置)
+        keypoint_3d_array = keypoint_3d_array_global - keypoint_3d_array_global[0:1, :]
         # 估计手腕坐标系（旋转矩阵）
         mediapipe_wrist_rot = self.estimate_frame_from_hand_points(keypoint_3d_array)
-        # 将关键点从MediaPipe坐标系转换到MANO坐标系（消除手部旋转 + 坐标定义匹配）
-        joint_pos = keypoint_3d_array @ mediapipe_wrist_rot @ self.operator2mano
+        # 将关键点从MediaPipe坐标系转换到MANO坐标系（注意这里右乘是消除手部旋转 + 坐标定义匹配）
+        joint_pos = keypoint_3d_array  # @ mediapipe_wrist_rot @ self.operator2mano
 
         return num_box, joint_pos, keypoint_2d, mediapipe_wrist_rot, keypoint_3d_array
 
@@ -196,5 +196,5 @@ class SingleHandDetector:
         if np.sum(z * (points[1] - points[2])) < 0:
             normal *= -1
             z *= -1
-        frame = np.stack([x, normal, z], axis=1)
+        frame = np.stack([x, normal, z], axis=1)  # 列向量构筑
         return frame

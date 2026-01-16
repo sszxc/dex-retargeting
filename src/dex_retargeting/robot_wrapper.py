@@ -120,10 +120,11 @@ class RobotWrapper:
         last_dummy_idx = dummy_indices[-1] if dummy_indices else None
         
         # 过滤掉包含 "dummy" 的关节，但保留最后一个
-        self._non_dummy_joint_indices = [
-            i for i, name in enumerate(self.joint_names)
-            if "dummy" not in name.lower() or i == last_dummy_idx
-        ]
+        # self._non_dummy_joint_indices = [
+        #     i for i, name in enumerate(self.joint_names)
+        #     if "dummy" not in name.lower() or i == last_dummy_idx
+        # ]
+        self._non_dummy_joint_indices = list(range(last_dummy_idx, len(self.joint_names)))
         return self._non_dummy_joint_indices
 
     def get_all_joint_positions(self, qpos: npt.NDArray) -> npt.NDArray:
@@ -201,3 +202,138 @@ class RobotWrapper:
         # 缓存结果
         self._cached_link_connections = connections
         return connections
+
+if __name__ == "__main__":
+    import sys
+    import time
+    from pathlib import Path
+    from loguru import logger
+    import rerun as rr
+    
+    # 添加项目根目录到路径，以便导入 utils
+    project_root = Path(__file__).parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    
+    from dex_retargeting.constants import (
+        RobotName,
+        RetargetingType,
+        HandType,
+        get_default_config_path,
+    )
+    from dex_retargeting.retargeting_config import RetargetingConfig
+    from utils.rerun_board import RerunBoard
+    
+    # 设置默认配置路径
+    robot_name = RobotName.allegro
+    retargeting_type = RetargetingType.position
+    hand_type = HandType.left
+    
+    config_path = get_default_config_path(robot_name, retargeting_type, hand_type)
+    if config_path is None:
+        raise ValueError(f"无法找到配置文件: {robot_name}, {retargeting_type}, {hand_type}")
+    
+    # 设置默认 URDF 目录
+    robot_dir = Path(__file__).parent.parent.parent / "assets" / "robots" / "hands"
+    RetargetingConfig.set_default_urdf_dir(str(robot_dir))
+    
+    # 加载配置并构建 retargeting（用于获取 robot）
+    logger.info(f"加载配置文件: {config_path}")
+    retargeting = RetargetingConfig.load_from_file(config_path).build()
+    robot = retargeting.optimizer.robot
+    
+    # 获取机器人自由度
+    total_dim = robot.dof
+    logger.info(f"机器人自由度: {total_dim}")
+    
+    # 初始化 rerun board
+    board = RerunBoard(
+        f"RobotWrapperTest_{time.strftime('%m_%d_%H_%M', time.localtime())}",
+        template="dex_retargeting"
+    )
+    
+    # 测试参数
+    DIM_TEST_DURATION = 3.0  # 每个维度测试3秒
+    CYCLE_COUNT = 2  # 每个维度波动2个来回（4π）
+    UPDATE_RATE = 30.0  # 更新频率 30Hz
+    UPDATE_INTERVAL = 1.0 / UPDATE_RATE
+    
+    # 获取关节连接关系（方法内部有缓存，第一次调用后会自动缓存）
+    joint_connections = robot.get_joint_connections()
+    logger.info(f"关节连接数量: {len(joint_connections)}")
+    
+    # 测试循环
+    while True:
+        # 循环测试所有维度
+        for dim_idx in range(total_dim):
+            dim_start_time = time.time()
+            logger.info(f"开始测试维度 {dim_idx}/{total_dim-1}")
+            
+            # 在当前维度的3秒测试时间内循环
+            while True:
+                current_time = time.time()
+                elapsed = current_time - dim_start_time
+                
+                # 如果超过3秒，切换到下一个维度
+                if elapsed >= DIM_TEST_DURATION:
+                    break
+                
+                # 计算当前维度在3秒内的进度 [0, 1]
+                progress = elapsed / DIM_TEST_DURATION
+                
+                # 计算正弦值：2个来回 = 4π，所以角度是 4π * progress
+                angle = 4 * np.pi * progress
+                sin_value = np.sin(angle)
+                
+                # 创建 qpos 数组：当前测试维度使用正弦值，其他维度为0
+                qpos = np.zeros(total_dim, dtype=np.float32)
+                # qpos = np.ones(total_dim, dtype=np.float32)  * 0.1
+                qpos[dim_idx] = sin_value
+                
+                # 输出日志
+                logger.info(f"测试维度 {dim_idx}, 值: {sin_value:.4f}, 进度: {progress*100:.1f}%")
+                
+                # 计算所有关节的3D位置
+                joint_positions = robot.get_all_joint_positions(qpos)
+                
+                # 可视化关节位置到 rerun
+                for i in range(joint_positions.shape[0]):
+                    board.log(
+                        f"world/robot/joint/joint_{i}",
+                        rr.Points3D(
+                            positions=[joint_positions[i]], 
+                            colors=[[0, 0, 255]], 
+                            radii=0.005, 
+                            # labels=f"{i}"
+                        ),
+                    )
+                
+                # 可视化连接线到 rerun
+                for pair in joint_connections:
+                    assert pair[0] < joint_positions.shape[0] and pair[1] < joint_positions.shape[0], f"pair: {pair} is out of range"
+                    board.log(
+                        f"world/robot/link/{pair}",
+                        rr.Arrows3D(
+                            origins=[joint_positions[pair[0]]], 
+                            vectors=[joint_positions[pair[1]] - joint_positions[pair[0]]], 
+                            colors=[[255, 255, 0]]
+                        ),
+                    )
+                
+                # 在原点绘制单位坐标轴
+                origin = np.array([0.0, 0.0, 0.0])
+                identity_rotation = np.eye(3)  # 单位旋转矩阵
+                board.log_axes(
+                    translation=origin,
+                    rotation=identity_rotation,
+                    root="world",
+                    name="origin_axes",
+                    axis_size=0.5,  # 单位长度
+                )
+                
+                # 控制更新频率
+                time.sleep(UPDATE_INTERVAL)
+            
+            logger.info(f"完成测试维度 {dim_idx}/{total_dim-1}")
+        
+        logger.info("完成一轮所有维度测试，开始下一轮循环")

@@ -32,7 +32,6 @@ class SeqRetargeting:
 
         # Joint limit
         # 关节限制设置
-        self.has_joint_limits = has_joint_limits
         joint_limits = np.ones_like(robot.joint_limits)
         joint_limits[:, 0] = -1e4  # a large value is equivalent to no limit
         # 大数值等价于无限制
@@ -135,6 +134,9 @@ class SeqRetargeting:
         )
         # 组合位置和姿态为姿态向量 [x, y, z, roll, pitch, yaw]
         pose_vec = np.concatenate([target_root_pose[:3, 3], euler])
+        print("Called warm_start with pose_vec: ", pose_vec)
+        raise Exception("When do you call this function?")
+        breakpoint()
 
         # Find the dummy joints
         # 找到虚拟关节并设置其位置

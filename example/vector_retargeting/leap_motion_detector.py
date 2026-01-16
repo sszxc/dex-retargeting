@@ -60,34 +60,34 @@ class LeapMotionHandDetector:
         """
         self.hand_type = hand_type
         self.tracking_mode = tracking_mode
-        
+
         # 根据手部类型选择对应的坐标转换矩阵
         self.operator2mano = (
             OPERATOR2MANO_RIGHT if hand_type == "Right" else OPERATOR2MANO_LEFT
         )
-        
+
         # Leap Motion 期望的手部类型
         self.leap_hand_type = (
             leap.HandType.Right if hand_type == "Right" else leap.HandType.Left
         )
-        
+
         # 初始化连接和监听器
         self.connection = None
         self.listener = None
         self.latest_event = None
         self.connected = False
         self.connection_context = None
-        
+
         # 创建一个简单的监听器来获取跟踪事件
         class TrackingListener(leap.Listener):
             def __init__(self, detector):
                 super().__init__()
                 self.detector = detector
-                
+
             def on_connection_event(self, event):
                 self.detector.connected = True
                 print("Leap Motion: Connected")
-                
+
             def on_device_event(self, event):
                 try:
                     with event.device.open():
@@ -95,20 +95,20 @@ class LeapMotionHandDetector:
                 except leap.LeapCannotOpenDeviceError:
                     info = event.device.get_info()
                 print(f"Leap Motion: Found device {info.serial}")
-                
+
             def on_tracking_event(self, event):
                 self.detector.latest_event = event
-        
+
         self.listener = TrackingListener(self)
         self.connection = leap.Connection()
         self.connection.add_listener(self.listener)
-        
+
         # 打开连接（使用 context manager 确保连接保持打开）
         # 注意：connection.open() 返回一个 context manager，我们需要保持它打开
         self.connection_context = self.connection.open()
         self.connection_context.__enter__()  # 手动进入 context
         self.connection.set_tracking_mode(tracking_mode)
-        
+
         # 等待连接建立
         wait_until(lambda: self.connected, timeout=5)
         print(f"Leap Motion: 初始化完成，等待 {hand_type} 手部数据...")
@@ -138,7 +138,7 @@ class LeapMotionHandDetector:
             形状为 (21, 3) 的 numpy 数组，包含21个关键点的 x, y, z 坐标（单位：毫米）
         """
         keypoints = np.zeros((21, 3))
-        
+
         try:
             # 0: 手腕位置
             if hand.arm and hand.arm.next_joint:
@@ -148,36 +148,36 @@ class LeapMotionHandDetector:
                 # 如果没有手臂数据，使用手掌中心
                 palm = hand.palm.position
                 keypoints[0] = [palm.x, palm.y, palm.z]
-            
+
             # 遍历5个手指
             for digit_idx in range(5):
                 digit = hand.digits[digit_idx]
-                
+
                 # 每个手指有4个骨骼，对应 MediaPipe 的4个关键点
                 # 骨骼0: 从手掌到 MCP (Metacarpophalangeal joint)
                 # 骨骼1: MCP 到 PIP (Proximal Interphalangeal joint)
                 # 骨骼2: PIP 到 DIP (Distal Interphalangeal joint)
                 # 骨骼3: DIP 到 Tip
-                
+
                 if len(digit.bones) >= 4:
                     # MCP: 第一个骨骼的起点
                     if digit.bones[0].prev_joint:
                         mcp = digit.bones[0].prev_joint
                         keypoint_idx = 1 + digit_idx * 4  # 拇指:1, 食指:5, 中指:9, 无名指:13, 小指:17
                         keypoints[keypoint_idx] = [mcp.x, mcp.y, mcp.z]
-                    
+
                     # PIP: 第二个骨骼的起点
                     if digit.bones[1].prev_joint:
                         pip = digit.bones[1].prev_joint
                         keypoint_idx = 2 + digit_idx * 4
                         keypoints[keypoint_idx] = [pip.x, pip.y, pip.z]
-                    
+
                     # DIP: 第三个骨骼的起点
                     if digit.bones[2].prev_joint:
                         dip = digit.bones[2].prev_joint
                         keypoint_idx = 3 + digit_idx * 4
                         keypoints[keypoint_idx] = [dip.x, dip.y, dip.z]
-                    
+
                     # Tip: 最后一个骨骼的终点
                     if digit.bones[3].next_joint:
                         tip = digit.bones[3].next_joint
@@ -189,12 +189,12 @@ class LeapMotionHandDetector:
                         tip = digit.distal.next_joint
                         keypoint_idx = 4 + digit_idx * 4
                         keypoints[keypoint_idx] = [tip.x, tip.y, tip.z]
-            
+
             # 将单位从毫米转换为米（Leap Motion 使用毫米，MediaPipe 使用米）
             keypoints = keypoints / 1000.0
-            
+
             return keypoints
-            
+
         except Exception as e:
             print(f"提取关键点时出错: {e}")
             return None
@@ -248,34 +248,43 @@ class LeapMotionHandDetector:
         """
         if self.latest_event is None:
             return 0, None, None, None, None
-        
+
         # 查找指定类型的手
         target_hand = None
         for hand in self.latest_event.hands:
             if hand.type == self.leap_hand_type:
                 target_hand = hand
                 break
-        
+
         if target_hand is None:
             return 0, None, None, None, None
-        
+
         # 提取关键点（全局位置）
         keypoint_3d_global = self.extract_keypoints_from_hand(target_hand)
         if keypoint_3d_global is None:
             return 0, None, None, None, None
-        
+
+        CAMERA2TABLE = np.array(
+            [
+                [1, 0, 0],
+                [0, 0, -1],
+                [0, 1, 0],
+            ]
+        )
+        keypoint_3d_global = keypoint_3d_global @ CAMERA2TABLE.T
+
         # 保存全局位置用于可视化
         keypoint_3d_for_vis = keypoint_3d_global.copy()
-        
+
         # 将坐标原点移到手腕（索引0）- 用于重定向计算
         keypoint_3d_relative = keypoint_3d_global - keypoint_3d_global[0:1, :]
-        
+
         # 估计手腕坐标系（旋转矩阵）- 使用相对位置
         mediapipe_wrist_rot = self.estimate_frame_from_hand_points(keypoint_3d_relative)
-        
-        # 将关键点从 Leap Motion 坐标系转换到 MANO 坐标系（使用相对位置）
-        joint_pos = keypoint_3d_relative @ mediapipe_wrist_rot @ self.operator2mano
-        
+
+        # 将关键点从 Leap Motion 坐标系转换到 MANO 坐标系（消除了旋转，但是有绝对位置）
+        joint_pos = keypoint_3d_global # @ mediapipe_wrist_rot @ self.operator2mano
+
         # 返回格式与 SingleHandDetector 兼容
         # keypoint_2d 设为 None（保持兼容性）
         # keypoint_3d_for_vis 是全局位置，用于可视化
@@ -296,17 +305,17 @@ class LeapMotionHandDetector:
         """
         # 将单位从米转换回毫米（用于投影计算）
         keypoints_mm = keypoint_3d * 1000.0
-        
+
         # 计算中心偏移（参考 visualiser.py 的 get_joint_position）
         # visualiser.py: return int(bone.x + (self.screen_size[1] / 2)), int(bone.z + (self.screen_size[0] / 2))
         center_x = image_size[1] / 2
         center_y = image_size[0] / 2
-        
+
         # 直接使用原始坐标投影，不进行缩放和居中
         keypoint_2d = np.zeros((21, 2))
         keypoint_2d[:, 0] = keypoints_mm[:, 0] + center_x  # x 坐标
         keypoint_2d[:, 1] = keypoints_mm[:, 2] + center_y  # z 坐标作为 y
-        
+
         return keypoint_2d.astype(int)
 
     def draw_skeleton_on_image(
@@ -328,14 +337,14 @@ class LeapMotionHandDetector:
                 # 创建一个默认大小的画布
                 image = np.zeros((720, 1280, 3), dtype=np.uint8)
             return image
-        
+
         # 如果图像为None，创建一个画布
         if image is None:
             image = np.zeros((720, 1280, 3), dtype=np.uint8)
-        
+
         # 将3D关键点投影到2D
         keypoint_2d = self.project_3d_to_2d(keypoint_3d, image.shape[:2])
-        
+
         # MediaPipe 手部连接关系
         # 定义手部连接（参考 MediaPipe 的 HAND_CONNECTIONS）
         connections = [
@@ -352,7 +361,7 @@ class LeapMotionHandDetector:
             # 小指
             (17, 18), (18, 19), (19, 20),
         ]
-        
+
         # 绘制连接线
         if style == "default":
             line_color = (0, 255, 0)  # 绿色
@@ -364,7 +373,7 @@ class LeapMotionHandDetector:
             point_color = (255, 48, 48)  # 红色
             line_thickness = 2
             point_radius = 4
-        
+
         # 绘制连接线
         for start_idx, end_idx in connections:
             start = tuple(keypoint_2d[start_idx])
@@ -373,7 +382,7 @@ class LeapMotionHandDetector:
             if (0 <= start[0] < image.shape[1] and 0 <= start[1] < image.shape[0] and
                 0 <= end[0] < image.shape[1] and 0 <= end[1] < image.shape[0]):
                 cv2.line(image, start, end, line_color, line_thickness)
-        
+
         # 绘制关键点
         for i, point in enumerate(keypoint_2d):
             point_tuple = tuple(point)
@@ -382,7 +391,7 @@ class LeapMotionHandDetector:
                 # 可选：在关键点上绘制一个小圆表示关键点
                 if i == 0:  # 手腕用更大的点
                     cv2.circle(image, point_tuple, point_radius + 2, point_color, -1)
-        
+
         # 添加文本信息
         cv2.putText(
             image,
@@ -393,7 +402,7 @@ class LeapMotionHandDetector:
             (255, 255, 255),
             2,
         )
-        
+
         # 添加帧ID信息（如果有）
         if hasattr(self, 'latest_event') and self.latest_event is not None:
             frame_id_text = f"Frame: {self.latest_event.tracking_frame_id}"
@@ -406,7 +415,7 @@ class LeapMotionHandDetector:
                 (200, 200, 200),
                 1,
             )
-        
+
         return image
 
     def close(self):
