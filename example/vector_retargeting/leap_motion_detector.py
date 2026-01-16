@@ -29,6 +29,14 @@ OPERATOR2MANO_LEFT = np.array(
 )
 
 
+CAMERA2TABLE = np.array(
+    [
+        [1, 0, 0],
+        [0, 0, -1],
+        [0, 1, 0],
+    ]
+)
+
 def wait_until(condition: Callable[[], bool], timeout: float = 5, poll_delay: float = 0.01):
     """等待条件满足"""
     start_time = timer()
@@ -264,13 +272,6 @@ class LeapMotionHandDetector:
         if keypoint_3d_global is None:
             return 0, None, None, None, None
 
-        CAMERA2TABLE = np.array(
-            [
-                [1, 0, 0],
-                [0, 0, -1],
-                [0, 1, 0],
-            ]
-        )
         keypoint_3d_global = keypoint_3d_global @ CAMERA2TABLE.T
 
         # 保存全局位置用于可视化
@@ -303,6 +304,7 @@ class LeapMotionHandDetector:
         Returns:
             形状为 (21, 2) 的2D关键点数组（像素坐标）
         """
+        keypoint_3d = keypoint_3d @ CAMERA2TABLE
         # 将单位从米转换回毫米（用于投影计算）
         keypoints_mm = keypoint_3d * 1000.0
 

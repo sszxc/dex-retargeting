@@ -124,7 +124,10 @@ class RobotWrapper:
         #     i for i, name in enumerate(self.joint_names)
         #     if "dummy" not in name.lower() or i == last_dummy_idx
         # ]
-        self._non_dummy_joint_indices = list(range(last_dummy_idx, len(self.joint_names)))
+        if last_dummy_idx is not None:
+            self._non_dummy_joint_indices = list(range(last_dummy_idx, len(self.joint_names)))
+        else:
+            self._non_dummy_joint_indices = list(range(len(self.joint_names)))
         return self._non_dummy_joint_indices
 
     def get_all_joint_positions(self, qpos: npt.NDArray) -> npt.NDArray:

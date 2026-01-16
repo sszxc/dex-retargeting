@@ -203,6 +203,7 @@ class RetargetingConfig:
                 target_link_human_indices=self.target_link_human_indices,
                 norm_delta=self.normal_delta,
                 huber_delta=self.huber_delta,
+                scaling=self.scaling_factor,
             )
         elif self.type == "vector":
             optimizer = VectorOptimizer(

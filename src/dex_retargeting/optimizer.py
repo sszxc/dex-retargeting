@@ -186,6 +186,7 @@ class PositionOptimizer(Optimizer):
         target_link_human_indices: np.ndarray,
         huber_delta=0.02,
         norm_delta=4e-3,
+        scaling=1.0,
     ):
         """
         初始化位置优化器
@@ -197,12 +198,14 @@ class PositionOptimizer(Optimizer):
             target_link_human_indices: 目标链接对应的人手索引
             huber_delta: Huber损失的阈值参数
             norm_delta: 正则化项的权重
+            scaling: 缩放因子
         """
         super().__init__(robot, target_joint_names, target_link_human_indices)
         self.body_names = target_link_names
         # 使用Huber损失（平滑L1损失）来处理位置误差
         self.huber_loss = torch.nn.SmoothL1Loss(beta=huber_delta)
         self.norm_delta = norm_delta
+        self.scaling = scaling
 
         # Sanity check and cache link indices
         # 验证并缓存链接索引，避免重复查找
@@ -227,7 +230,7 @@ class PositionOptimizer(Optimizer):
         # 初始化关节位置，设置固定关节的值
         qpos = np.zeros(self.num_joints)
         qpos[self.idx_pin2fixed] = fixed_qpos
-        torch_target_pos = torch.as_tensor(target_pos)
+        torch_target_pos = torch.as_tensor((target_pos - target_pos[0, :]) * self.scaling + target_pos[0, :])
         torch_target_pos.requires_grad_(False)
 
         def objective(x: np.ndarray, grad: np.ndarray) -> float:

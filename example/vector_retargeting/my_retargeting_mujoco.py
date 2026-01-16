@@ -78,9 +78,9 @@ def process_detection_and_retargeting(
         logger.info("使用 Webcam 作为输入源")
 
     # rerun board
-    board = RerunBoard(f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
-                       template="dex_retargeting")
-    # board = DummyClass()
+    # board = RerunBoard(f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
+    #                    template="dex_retargeting")
+    board = DummyClass()
 
     # 计时器：用于统计关键步骤的耗时（仅用于 debug 分析）
     timer = Timer(enabled=True)
@@ -109,35 +109,35 @@ def process_detection_and_retargeting(
         _, joint_pos, keypoint_2d, mediapipe_wrist_rot, keypoint_3d = detector.detect(rgb)
         timer.check("detect")
 
-        # 显示检测结果
-        if input_source == "webcam" and bgr is not None:
-            # Webcam 模式：在原始图像上绘制
-            bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d, style="default")
-            cv2.imshow("realtime_retargeting_demo", bgr)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-        elif input_source == "leap_motion":
-            # Leap Motion 模式：创建虚拟画布并绘制3D关键点
-            if keypoint_3d is not None:
-                # 创建一个画布用于可视化
-                vis_image = detector.draw_skeleton_on_image(None, keypoint_3d, style="default")
-                cv2.imshow("realtime_retargeting_demo", vis_image)
-            else:
-                # 如果没有检测到手部，显示空白画布
-                vis_image = np.zeros((720, 1280, 3), dtype=np.uint8)
-                cv2.putText(
-                    vis_image,
-                    f"Leap Motion - Waiting for {hand_type} hand...",
-                    (10, 360),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (255, 255, 255),
-                    2,
-                )
-                cv2.imshow("realtime_retargeting_demo", vis_image)
+        # # 显示检测结果
+        # if input_source == "webcam" and bgr is not None:
+        #     # Webcam 模式：在原始图像上绘制
+        #     bgr = detector.draw_skeleton_on_image(bgr, keypoint_2d, style="default")
+        #     cv2.imshow("realtime_retargeting_demo", bgr)
+        #     if cv2.waitKey(1) & 0xFF == ord("q"):
+        #         break
+        # elif input_source == "leap_motion":
+        #     # Leap Motion 模式：创建虚拟画布并绘制3D关键点
+        #     if keypoint_3d is not None:
+        #         # 创建一个画布用于可视化
+        #         vis_image = detector.draw_skeleton_on_image(None, keypoint_3d, style="default")
+        #         cv2.imshow("realtime_retargeting_demo", vis_image)
+        #     else:
+        #         # 如果没有检测到手部，显示空白画布
+        #         vis_image = np.zeros((720, 1280, 3), dtype=np.uint8)
+        #         cv2.putText(
+        #             vis_image,
+        #             f"Leap Motion - Waiting for {hand_type} hand...",
+        #             (10, 360),
+        #             cv2.FONT_HERSHEY_SIMPLEX,
+        #             1.0,
+        #             (255, 255, 255),
+        #             2,
+        #         )
+        #         cv2.imshow("realtime_retargeting_demo", vis_image)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+        #     if cv2.waitKey(1) & 0xFF == ord("q"):
+        #         break
 
         # 记录结果到 rerun
         if joint_pos is not None:
@@ -189,9 +189,10 @@ def process_detection_and_retargeting(
                 ref_value = joint_pos[indices, :]
             else:
                 # Vector retargeting: 使用相对位置
+                joint_pos_relative = joint_pos - joint_pos[0, :]
                 origin_indices = indices[0, :]
                 task_indices = indices[1, :]
-                ref_value = joint_pos[task_indices, :] - joint_pos[origin_indices, :]  # 第二组 index 减去 第一组 index 的相对位置
+                ref_value = joint_pos_relative[task_indices, :] - joint_pos_relative[origin_indices, :]  # 第二组 index 减去 第一组 index 的相对位置
             # for allegro & vector: array([[ 0,  0,  0,  0], [ 4,  8, 12, 16]]), ref_value 计算了 Thumb Tip, Index Tip, Middle Tip, Ring Tip 的相对根部的位置
             # for allegro & dexpilot: array([[ 8, 12, 16, 12, 16, 16,  0,  0,  0,  0], [ 4,  4,  4,  8,  8, 12,  4,  8, 12, 16]]), ref_value 计算四个指尖和手腕、四个指尖之间的相对位置
 
@@ -258,8 +259,8 @@ def process_detection_and_retargeting(
             except:
                 pass  # 队列满了，跳过这一帧，保持实时性
 
-        # time.sleep(1 / 30.0)
-        time.sleep(1 / 10.0)
+        time.sleep(1 / 30.0)
+        # time.sleep(1 / 10.0)
 
     # 清理资源
     if cap is not None:
@@ -523,6 +524,8 @@ def main(
         config_path = Path(config_path_override)
     else:
         config_path = get_default_config_path(robot_name, retargeting_type, hand_type)
+    print(f"Using config_path: {config_path}")
+    input("Press Enter to continue...")
     robot_dir = (
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
     )
@@ -640,8 +643,8 @@ def main(
                     data.ctrl[1] = q[1]
                     data.ctrl[2] = q[2] - 0.6
 
-                    data.ctrl[3] = q[3]  # - np.pi
-                    data.ctrl[4] = q[4] - np.pi
+                    data.ctrl[3] = q[3]  # + np.pi/2
+                    data.ctrl[4] = q[4]  # - np.pi
                     data.ctrl[5] = q[5]  # - np.pi
 
                     data.ctrl[14:18] = q[6:10]  # 小指
