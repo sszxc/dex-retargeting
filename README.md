@@ -1,13 +1,16 @@
 # Dex Retargeting
-### Installation on macOS
-1. Install Vulkan SDK from [LunarXchange](https://vulkan.lunarg.com/sdk/home).
-2. clone repo
+### Installation on macOS/Linux
+1. (for macOS only) Install Vulkan SDK from [LunarXchange](https://vulkan.lunarg.com/sdk/home).
+2. Install Leap SDK from [Ultraleap](https://www.ultraleap.com/downloads/leap-motion-controller-2/).
+3. Build LeapC Python Bindings from source: [ultraleap/leapc-python-bindings: Gemini LeapC Python Bindings](https://github.com/ultraleap/leapc-python-bindings?tab=readme-ov-file#installation)
+4. clone repo
     ```shell
     git clone https://github.com/sszxc/dex-retargeting.git
+    cd dex-retargeting
     git submodule update --init --recursive  # download the assets
     ```
 
-3. Create conda environment
+5. Create conda environment
     ```shell
     conda create -n dex_retargeting python=3.12.12
     conda activate dex_retargeting
@@ -19,6 +22,9 @@
 
     pip install mujoco
     ```
+
+
+
 
 ### Usage
 ```shell
