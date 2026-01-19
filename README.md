@@ -3,6 +3,11 @@
 1. (for macOS only) Install Vulkan SDK from [LunarXchange](https://vulkan.lunarg.com/sdk/home).
 2. Install Leap SDK from [Ultraleap](https://www.ultraleap.com/downloads/leap-motion-controller-2/).
 3. Build LeapC Python Bindings from source: [ultraleap/leapc-python-bindings: Gemini LeapC Python Bindings](https://github.com/ultraleap/leapc-python-bindings?tab=readme-ov-file#installation)
+   ```shell
+   pip install -e leapc-python-api  # key steps
+   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/ultraleap-hand-tracking-service  # recommended to add to .bashrc
+   ```
+
 4. clone repo
     ```shell
     git clone https://github.com/sszxc/dex-retargeting.git
@@ -29,6 +34,8 @@
 ### Usage
 ```shell
 python example/vector_retargeting/show_realtime_retargeting.py --robot-name allegro --retargeting-type dexpilot --hand-type right
+
+
 ```
 
 
