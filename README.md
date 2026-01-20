@@ -29,13 +29,11 @@
     ```
 
 
-
-
 ### Usage
 ```shell
 python example/vector_retargeting/show_realtime_retargeting.py --robot-name allegro --retargeting-type dexpilot --hand-type right
 
-
+mjpython example/vector_retargeting/my_retargeting_mujoco.py --robot-name allegro --retargeting-type position --hand-type left --input-source leap_motion --config_path_override src/dex_retargeting/configs/my/offline_absolute_pose_allegro_hand_left.yml
 ```
 
 
