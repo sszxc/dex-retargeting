@@ -62,7 +62,7 @@ class RetargetingConfig:
     # Low pass filter
     low_pass_alpha: float = 0.1
 
-    _TYPE = ["vector", "position", "dexpilot"]
+    _TYPE = ["vector", "position", "dexpilot", "joint"]
     _DEFAULT_URDF_DIR = "./"
 
     def __post_init__(self):
@@ -122,6 +122,9 @@ class RetargetingConfig:
                     "If you do not know exactly how it is used, please leave it to None for default.\n"
                     "\033[00m",
                 )
+        elif self.type == "joint":
+            # Joint: 仅需 target_joint_names（可为空，表示使用机器人全部关节）；target_link_human_indices 可选
+            pass
 
         # URDF path check
         urdf_path = Path(self.urdf_path)
@@ -169,6 +172,7 @@ class RetargetingConfig:
             VectorOptimizer,
             PositionOptimizer,
             DexPilotOptimizer,
+            JointOptimizer,
         )
         import tempfile
 
@@ -226,6 +230,17 @@ class RetargetingConfig:
                 scaling=self.scaling_factor,
                 project_dist=self.project_dist,
                 escape_dist=self.escape_dist,
+            )
+        elif self.type == "joint":
+            thli = self.target_link_human_indices
+            if thli is None:
+                thli = np.zeros((2, len(joint_names)), dtype=np.int64)
+            robot_name = Path(self.urdf_path).stem
+            optimizer = JointOptimizer(
+                robot,
+                joint_names,
+                target_link_human_indices=thli,
+                robot_name=robot_name,
             )
         else:
             raise RuntimeError()

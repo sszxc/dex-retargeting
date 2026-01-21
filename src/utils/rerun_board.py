@@ -50,8 +50,15 @@ class RerunBoard:
     def get_dex_retargeting_board(self):
         # rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
         blueprint = rrb.Blueprint(
-            rrb.Spatial3DView(
-                origin="/world",
+            rrb.Horizontal(
+                rrb.Spatial3DView(
+                    origin="/world",
+                ),
+                rrb.TimeSeriesView(
+                    name="joint_angles",
+                    origin="/joint_angles",
+                ),
+                column_shares=[2, 1],
             ),
             rrb.BlueprintPanel(state="collapsed"),
             rrb.SelectionPanel(state="collapsed"),

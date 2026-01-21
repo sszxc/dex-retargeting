@@ -37,6 +37,7 @@ class RetargetingType(enum.Enum):
         enum.auto()
     )  # For offline data processing, especially hand-object interaction data
     dexpilot = enum.auto()  # For teleoperation, with finger closing prior
+    joint = enum.auto()  # 从 joint_pos 直接计算关节角，不做优化
 
 
 class HandType(enum.Enum):
@@ -71,11 +72,15 @@ def get_default_config_path(
     if "gripper" in robot_name_str:  # For gripper robots, only use gripper config file.
         if retargeting_type == RetargetingType.dexpilot:
             config_name = f"{robot_name_str}_dexpilot.yml"
+        elif retargeting_type == RetargetingType.joint:
+            config_name = f"{robot_name_str}_joint.yml"
         else:
             config_name = f"{robot_name_str}.yml"
     else:
         if retargeting_type == RetargetingType.dexpilot:
             config_name = f"{robot_name_str}_{hand_type_str}_dexpilot.yml"
+        elif retargeting_type == RetargetingType.joint:
+            config_name = f"{robot_name_str}_{hand_type_str}_joint.yml"
         else:
             config_name = f"{robot_name_str}_{hand_type_str}.yml"
     return config_path / config_name

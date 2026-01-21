@@ -78,9 +78,9 @@ def process_detection_and_retargeting(
         logger.info("使用 Webcam 作为输入源")
 
     # rerun board
-    # board = RerunBoard(f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
-    #                    template="dex_retargeting")
-    board = DummyClass()
+    board = RerunBoard(f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
+                       template="dex_retargeting")
+    # board = DummyClass()
 
     # 计时器：用于统计关键步骤的耗时（仅用于 debug 分析）
     timer = Timer(enabled=True)
@@ -147,7 +147,7 @@ def process_detection_and_retargeting(
                     f"world/human/keypoint/{i}",
                     rr.Points3D(positions=[keypoint_3d[i]],
                                 colors=[[255, 0, 0]], radii=0.005,
-                                # labels=f"{i}",
+                                labels=f"{i}",
                     ),
                 )  # , static=True
             # 连接线
@@ -187,6 +187,9 @@ def process_detection_and_retargeting(
             if retargeting_type == "POSITION":
                 # Position retargeting: 使用绝对位置
                 ref_value = joint_pos[indices, :]
+            elif retargeting_type == "JOINT":
+                # Joint retargeting: 用完整 joint_pos 直接计算 robot_qpos（由 JointOptimizer 完成）
+                ref_value = joint_pos  # (N, 3) 人手关键点 3D 位置
             else:
                 # Vector retargeting: 使用相对位置
                 joint_pos_relative = joint_pos - joint_pos[0, :]
@@ -199,6 +202,11 @@ def process_detection_and_retargeting(
             # 执行重定向（返回完整的 robot_qpos，包括固定关节，已应用适配器）
             robot_qpos = retargeting.retarget(ref_value)
             timer.check("retarget")
+            for i in range(robot_qpos.shape[0]):
+                board.log(
+                    f"joint_angles/joint_{i:02d}",
+                    rr.Scalars(robot_qpos[i]),
+                )
 
             # 获取机器人关节的3D位置并可视化
             robot = retargeting.optimizer.robot

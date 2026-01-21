@@ -804,3 +804,168 @@ class DexPilotOptimizer(Optimizer):
             return result
 
         return objective
+
+
+class JointOptimizer(Optimizer):
+    """关节优化器 - 从手部关键点 3D 位置直接计算机器人关节角
+
+    与 Position/Vector/DexPilot 不同，本优化器不做非线性优化，而是用 detector.detect
+    得到的 joint_pos (N, 3) 通过解析或几何关系直接计算 robot_qpos。
+    具体计算逻辑通过 _compute_qpos_from_joint_pos(joint_pos) 实现；测试阶段可返回随机 qpos。
+    """
+    retargeting_type = "JOINT"
+
+    # 当前支持从 joint_pos 直接算关节角的机器人（urdf 的 stem，如 allegro_hand_left）
+    _SUPPORTED_ROBOTS = frozenset({"allegro_hand_left"})
+
+    def __init__(
+        self,
+        robot: RobotWrapper,
+        target_joint_names: List[str],
+        target_link_human_indices: Optional[np.ndarray] = None,
+        robot_name: Optional[str] = None,
+    ):
+        """
+        Args:
+            robot: 机器人包装器
+            target_joint_names: 需要计算/输出的目标关节名称列表
+            target_link_human_indices: 人手索引（本类中未使用，仅为与基类接口兼容，可传 None）
+            robot_name: 机器人标识，通常为 urdf 的 stem（如 allegro_hand_left），用于分支实现；由 RetargetingConfig.build 传入。
+        """
+        if target_link_human_indices is None:
+            target_link_human_indices = np.zeros((2, len(target_joint_names)), dtype=np.int64)
+        super().__init__(robot, target_joint_names, target_link_human_indices)
+        self.robot_name = robot_name
+
+    def _compute_qpos_from_joint_pos(self, joint_pos: np.ndarray) -> np.ndarray:
+        """
+        从人手关键点 3D 位置 joint_pos (N, 3) 直接计算目标关节角。
+
+        此处为占位实现：返回在关节限位内的随机值，用于联调与测试。
+        后续可在此实现基于几何/解析的 joint_pos -> robot_qpos 映射。
+
+        Args:
+            joint_pos: 人手关键点 3D 位置，形状 (N, 3)
+
+        Returns:
+            目标关节角，形状 (opt_dof,)，与 idx_pin2target 对应
+        """
+        if self.robot_name not in self._SUPPORTED_ROBOTS:
+            raise ValueError(
+                f"JointOptimizer: unsupported robot {self.robot_name!r}; "
+                f"supported: {sorted(self._SUPPORTED_ROBOTS)}."
+            )
+        if self.robot_name == 'allegro_hand_left':
+            result = np.zeros(self.opt_dof)
+            # assume always has dummy joint for the root
+            result[0:3] = joint_pos[0]
+            # calculate the rotation
+            # 使用 joint_pos[[0, 5, 9, 13], :] 计算平面，获得 y 方向向量
+            p0, p5, p9, p13 = joint_pos[0], joint_pos[5], joint_pos[9], joint_pos[13]
+            # 计算平面的法向量（拟合平面：四点，三角面法线平均）
+            v1 = p5 - p0
+            v2 = p9 - p0
+            v3 = p13 - p0
+            # 用三对边的外积平均作为法线
+            n1 = np.cross(v1, v2)
+            n2 = np.cross(v2, v3)
+            n3 = np.cross(v3, v1)
+            plane_normal = (n1 + n2 + n3) / 3.0
+            plane_normal = plane_normal / np.linalg.norm(plane_normal)
+            # x 方向: index 0 -> 9
+            x_dir = p9 - p0
+            x_dir = x_dir / np.linalg.norm(x_dir)
+            # z 方向: 右手系 x × y
+            y_dir = plane_normal
+            z_dir = np.cross(x_dir, y_dir)
+            z_dir = z_dir / np.linalg.norm(z_dir)
+            # 纠正y，使其正交于x和z（以防数值不正交）
+            y_dir = np.cross(z_dir, x_dir)
+            y_dir = y_dir / np.linalg.norm(y_dir)
+            # 构造旋转矩阵 [x_dir, y_dir, z_dir] 作为列
+            rotmat = np.stack([x_dir, y_dir, z_dir], axis=1)  # (3, 3)
+            SHIFTED = np.array(
+                [
+                    [0, 0, 1],
+                    [-1, 0, 0],
+                    [0, -1, 0],
+                ]
+            )
+            rotmat = rotmat @ SHIFTED
+            # 转为 XYZ 欧拉角 (rx, ry, rz)，弧度
+            import scipy.spatial.transform
+            euler_xyz = scipy.spatial.transform.Rotation.from_matrix(rotmat).as_euler("XYZ")
+            result[3:6] = euler_xyz
+
+            def angle_between_vectors(v1, v2):
+                v1_norm = v1 / np.linalg.norm(v1)
+                v2_norm = v2 / np.linalg.norm(v2)
+                if np.linalg.norm(v1) < 1e-8 or np.linalg.norm(v2) < 1e-8:
+                    return 0.0
+                dot = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
+                return np.arccos(dot)
+            def angle_between_plane_and_vector(plane_vector1, plane_vector2, vector):
+                pass
+
+            # calculate the joints
+            # thumb
+            v_0_4 = joint_pos[4] - joint_pos[0]
+            v_proj = v_0_4 - np.dot(v_0_4, y_dir) * y_dir  # 投影到 x_dir 和 z_dir 平面
+            if np.linalg.norm(v_proj) < 1e-8:
+                angle = 0.0
+            else:
+                v_proj = v_proj / np.linalg.norm(v_proj)
+                # 与 z_dir 构成的夹角（有符号，右手法则，只有在 xz 平面投影才有意义）
+                dot = np.clip(np.dot(v_proj, z_dir), -1.0, 1.0)
+                angle = np.arccos(dot)
+                # 判断方向: v_proj 从 z_dir 逆时针为正
+                sign = np.sign(np.dot(np.cross(z_dir, v_proj), y_dir))
+                angle = angle * sign
+            result[10] = angle
+            result[11] = 0
+            result[12] = angle_between_vectors(joint_pos[2] - joint_pos[1], joint_pos[3] - joint_pos[2])
+            result[13] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3])
+
+            # index
+            result[18] = 0
+            result[19] = angle_between_vectors(joint_pos[5] - joint_pos[0], joint_pos[6] - joint_pos[5])
+            result[20] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])
+            result[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7])
+            # middle
+            result[14] = 0
+            result[15] = angle_between_vectors(joint_pos[9] - joint_pos[0], joint_pos[10] - joint_pos[9])
+            result[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])
+            result[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11])
+            # ring
+            result[6] = 0
+            result[7] = angle_between_vectors(joint_pos[17] - joint_pos[0], joint_pos[18] - joint_pos[17])
+            result[8] = angle_between_vectors(joint_pos[18] - joint_pos[17], joint_pos[19] - joint_pos[18])
+            result[9] = angle_between_vectors(joint_pos[19] - joint_pos[18], joint_pos[20] - joint_pos[19])
+
+            return result
+        else:
+            raise ValueError(f"JointOptimizer: unsupported robot name: {self.robot_name}")
+        # # 占位：返回关节限位内的随机值；正式实现时用 joint_pos 计算
+        # lo = self.robot.joint_limits[self.idx_pin2target, 0]
+        # hi = self.robot.joint_limits[self.idx_pin2target, 1]
+        # return np.random.uniform(lo, hi).astype(np.float32)
+
+    def retarget(self, ref_value: np.ndarray, fixed_qpos: np.ndarray, last_qpos: np.ndarray):
+        """
+        使用 joint_pos 直接计算关节角，不做优化。
+
+        ref_value 即 detector.detect 返回的 joint_pos，形状 (N, 3)。
+        """
+        if len(fixed_qpos) != len(self.idx_pin2fixed):
+            raise ValueError(
+                f"JointOptimizer: expected {len(self.idx_pin2fixed)} fixed joints, got {len(fixed_qpos)}"
+            )
+        return self._compute_qpos_from_joint_pos(ref_value)
+
+    def get_objective_function(
+        self, ref_value: np.ndarray, fixed_qpos: np.ndarray, last_qpos: np.ndarray
+    ):
+        """Joint 模式不做优化，此方法不会被调用；仅满足抽象接口。"""
+        def objective(x: np.ndarray, grad: np.ndarray) -> float:
+            return 0.0
+        return objective
