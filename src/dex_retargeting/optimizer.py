@@ -858,7 +858,6 @@ class JointOptimizer(Optimizer):
         if self.robot_name == 'allegro_hand_left':
             result = np.zeros(self.opt_dof)
             # assume always has dummy joint for the root
-            result[0:3] = joint_pos[0]
             # calculate the rotation
             # 使用 joint_pos[[0, 5, 9, 13], :] 计算平面，获得 y 方向向量
             p0, p5, p9, p13 = joint_pos[0], joint_pos[5], joint_pos[9], joint_pos[13]
@@ -872,8 +871,8 @@ class JointOptimizer(Optimizer):
             n3 = np.cross(v3, v1)
             plane_normal = (n1 + n2 + n3) / 3.0
             plane_normal = plane_normal / np.linalg.norm(plane_normal)
-            # x 方向: index 0 -> 9
-            x_dir = p9 - p0
+            # x 方向: index 0 -> 13
+            x_dir = p13 - p0
             x_dir = x_dir / np.linalg.norm(x_dir)
             # z 方向: 右手系 x × y
             y_dir = plane_normal
@@ -896,6 +895,8 @@ class JointOptimizer(Optimizer):
             import scipy.spatial.transform
             euler_xyz = scipy.spatial.transform.Rotation.from_matrix(rotmat).as_euler("XYZ")
             result[3:6] = euler_xyz
+            result[0:3] = joint_pos[0] + 0.03 * x_dir
+            # result[0:3] = [0.0, 0.0, 0.5]  # fix
 
             def angle_between_vectors(v1, v2):
                 v1_norm = v1 / np.linalg.norm(v1)
@@ -904,44 +905,82 @@ class JointOptimizer(Optimizer):
                     return 0.0
                 dot = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
                 return np.arccos(dot)
+
             def angle_between_plane_and_vector(plane_vector1, plane_vector2, vector):
-                pass
+                """计算平面与向量之间的角度。
+                
+                平面由两个向量 plane_vector1 和 plane_vector2 定义。
+                返回向量与平面之间的角度（弧度），范围 [0, π/2]。
+                
+                Args:
+                    plane_vector1: 定义平面的第一个向量
+                    plane_vector2: 定义平面的第二个向量
+                    vector: 要计算角度的向量
+                    
+                Returns:
+                    向量与平面之间的角度（弧度）
+                """
+                # 检查输入向量的有效性
+                if np.linalg.norm(plane_vector1) < 1e-8 or np.linalg.norm(plane_vector2) < 1e-8:
+                    return 0.0
+                if np.linalg.norm(vector) < 1e-8:
+                    return 0.0
+                
+                # 计算平面的法向量（归一化）
+                plane_normal = np.cross(plane_vector1, plane_vector2)
+                norm_normal = np.linalg.norm(plane_normal)
+                if norm_normal < 1e-8:
+                    # 两个向量共线，无法定义平面
+                    return 0.0
+                plane_normal = plane_normal / norm_normal
+                
+                # 归一化输入向量
+                vector_norm = vector / np.linalg.norm(vector)
+                
+                # 计算法向量与向量的夹角
+                dot = np.clip(np.dot(plane_normal, vector_norm), -1.0, 1.0)
+                angle_with_normal = np.arccos(dot)
+                
+                # 向量与平面的夹角 = π/2 - 法向量与向量的夹角
+                # 使用 abs 确保角度在 [0, π/2] 范围内
+                angle = abs(np.pi / 2.0 - angle_with_normal)
+                
+                return angle
 
             # calculate the joints
             # thumb
-            v_0_4 = joint_pos[4] - joint_pos[0]
-            v_proj = v_0_4 - np.dot(v_0_4, y_dir) * y_dir  # 投影到 x_dir 和 z_dir 平面
-            if np.linalg.norm(v_proj) < 1e-8:
-                angle = 0.0
-            else:
-                v_proj = v_proj / np.linalg.norm(v_proj)
-                # 与 z_dir 构成的夹角（有符号，右手法则，只有在 xz 平面投影才有意义）
-                dot = np.clip(np.dot(v_proj, z_dir), -1.0, 1.0)
-                angle = np.arccos(dot)
-                # 判断方向: v_proj 从 z_dir 逆时针为正
-                sign = np.sign(np.dot(np.cross(z_dir, v_proj), y_dir))
-                angle = angle * sign
-            result[10] = angle
-            result[11] = 0
-            result[12] = angle_between_vectors(joint_pos[2] - joint_pos[1], joint_pos[3] - joint_pos[2])
+            # result[10] = angle_between_plane_and_vector(x_dir, z_dir, joint_pos[3] - joint_pos[0])
+            # result[11] = angle_between_plane_and_vector(x_dir, joint_pos[0] - joint_pos[3], joint_pos[4] - joint_pos[2])
+            # result[12] = angle_between_vectors(joint_pos[2] - joint_pos[0], joint_pos[3] - joint_pos[2])
+            from dex_retargeting.thumb_retarget import calculate_thumb_angles
+            # 构造从 world 坐标系到 local 坐标系的旋转矩阵
+            vec_in_new_coord = rotmat.T @ (joint_pos[3] - joint_pos[2])
+            success, _angles, error, actual_vec = calculate_thumb_angles(vec_in_new_coord)
+            result[10:13] = _angles
+
             result[13] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3])
 
             # index
-            result[18] = 0
-            result[19] = angle_between_vectors(joint_pos[5] - joint_pos[0], joint_pos[6] - joint_pos[5])
-            result[20] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])
+            result[18] = angle_between_plane_and_vector(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir)
+            # result[19] = angle_between_vectors(joint_pos[5] - joint_pos[0], joint_pos[6] - joint_pos[5])
+            # result[20] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])
             result[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7])
+            result[19] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])
+            result[20] = 0.5 * (result[19] + result[21])
             # middle
-            result[14] = 0
-            result[15] = angle_between_vectors(joint_pos[9] - joint_pos[0], joint_pos[10] - joint_pos[9])
-            result[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])
+            result[14] = angle_between_plane_and_vector(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], y_dir)
+            # result[15] = angle_between_vectors(joint_pos[9] - joint_pos[0], joint_pos[10] - joint_pos[9])
+            # result[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])
             result[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11])
+            result[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])
+            result[15] = 0.5 * (result[14] + result[16])
             # ring
-            result[6] = 0
-            result[7] = angle_between_vectors(joint_pos[17] - joint_pos[0], joint_pos[18] - joint_pos[17])
-            result[8] = angle_between_vectors(joint_pos[18] - joint_pos[17], joint_pos[19] - joint_pos[18])
-            result[9] = angle_between_vectors(joint_pos[19] - joint_pos[18], joint_pos[20] - joint_pos[19])
-
+            result[6] = angle_between_plane_and_vector(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir)
+            # result[7] = angle_between_vectors(joint_pos[13] - joint_pos[0], joint_pos[14] - joint_pos[13])
+            # result[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14])
+            result[9] = angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15])
+            result[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14])
+            result[7] = 0.5 * (result[6] + result[8])
             return result
         else:
             raise ValueError(f"JointOptimizer: unsupported robot name: {self.robot_name}")

@@ -203,6 +203,8 @@ def process_detection_and_retargeting(
             robot_qpos = retargeting.retarget(ref_value)
             timer.check("retarget")
             for i in range(robot_qpos.shape[0]):
+                # if i not in [10, 11, 12, 13]:  # select some of the joint to show
+                #     continue
                 board.log(
                     f"joint_angles/joint_{i:02d}",
                     rr.Scalars(robot_qpos[i]),
