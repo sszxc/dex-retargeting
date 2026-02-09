@@ -16,13 +16,14 @@ import sys
 
 import numpy as np
 import mujoco
+from tqdm import tqdm
 
 # 无 xml 相机时使用的 3 个动态相机参数：均 look at (0, 0, 0.2)
 DEFAULT_LOOKAT = [0.0, 0.0, 0.2]
 DYNAMIC_CAMERAS = [
-    {"distance": 0.5, "elevation": -20, "azimuth": 45},
+    {"distance": 0.8, "elevation": -20, "azimuth": 45},
     {"distance": 0.5, "elevation": -20, "azimuth": 90},
-    {"distance": 0.5, "elevation": -20, "azimuth": 135},
+    {"distance": 0.8, "elevation": -20, "azimuth": 135},
 ]
 
 
@@ -40,13 +41,17 @@ def _make_dynamic_camera(par):
     return camera
 
 
-def render_one(npz_path: Path, args, out_path: Path | None = None) -> None:
-    """渲染单个 npz 并保存到 out_path（None 时用 npz 同目录同名 .png）。"""
+def render_one(npz_path: Path, args, out_path: Path | None = None, *, verbose: bool = False) -> None:
+    """渲染单个 npz 并保存到 out_path（None 时用 npz 同目录同名 .png）。verbose 为 True 时打印加载/渲染详情。"""
     if not npz_path.exists() or not npz_path.is_file():
         raise FileNotFoundError(f"npz 文件不存在: {npz_path}")
 
     data_npz = np.load(npz_path, allow_pickle=True)
     qpos = np.asarray(data_npz["qpos"]).copy()
+    if verbose:
+        print(f"[加载 npz] {npz_path}")
+        print(f"[加载 qpos] shape={qpos.shape}, 具体数值:\n{qpos}")
+
     mj_xml_path_arr = data_npz["mj_xml_path"]
     mj_xml_path = str(mj_xml_path_arr.item() if mj_xml_path_arr.ndim == 0 else mj_xml_path_arr[()])
 
@@ -56,6 +61,8 @@ def render_one(npz_path: Path, args, out_path: Path | None = None) -> None:
     if not xml_path or not Path(xml_path).exists():
         raise FileNotFoundError(f"场景 xml 不存在: {mj_xml_path}")
 
+    if verbose:
+        print(f"[加载 xml] 位置: {xml_path.resolve()}")
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     data = mujoco.MjData(model)
 
@@ -64,6 +71,8 @@ def render_one(npz_path: Path, args, out_path: Path | None = None) -> None:
             f"npz 中 qpos 长度 {qpos.size} 与模型 nq {data.qpos.size} 不一致，请确认 npz 与 xml 对应"
         )
     data.qpos[:] = qpos
+    if verbose:
+        print(f"[设置 data.qpos] 已写入 {data.qpos.size} 维，与模型 nq 一致")
     mujoco.mj_forward(model, data)
 
     # 决定要渲染的相机列表：xml 有相机则用全部 xml 相机，否则用 3 个动态 MjvCamera
@@ -79,6 +88,8 @@ def render_one(npz_path: Path, args, out_path: Path | None = None) -> None:
             renderer.update_scene(data, camera=cam)
             pixels = renderer.render()
             frames.append(pixels)
+            if verbose:
+                print(f"[渲染相机 {cam}] 已渲染")
         # 上下拼接：第一张在上，依次向下
         combined = np.vstack(frames)
     finally:
@@ -101,7 +112,8 @@ def render_one(npz_path: Path, args, out_path: Path | None = None) -> None:
             import cv2
             cv2.imwrite(str(out_path), cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
 
-    print(f"已渲染 {len(frames)} 张并上下拼接保存: {out_path}")
+    if verbose:
+        print(f"[拼接保存] 已渲染 {len(frames)} 张并上下拼接保存: {out_path}")
 
 
 def main():
@@ -115,6 +127,8 @@ def main():
                         help="输出图像路径（仅单文件时有效），默认与 npz 同目录、同名 .npz 改为 .png")
     parser.add_argument("--height", type=int, default=480, help="每张子图渲染高度")
     parser.add_argument("--width", type=int, default=640, help="每张子图渲染宽度")
+    parser.add_argument("--verbose", "-v", action="store_true", default=True, help="打印加载/渲染详情（单文件默认开启）")
+    parser.add_argument("--no-verbose", "--quiet", "-q", action="store_false", dest="verbose", help="关闭详情输出")
     args = parser.parse_args()
 
     npz_path = Path(args.npz_path)
@@ -126,16 +140,16 @@ def main():
         if not npz_files:
             print(f"目录下未找到 .npz 文件: {npz_path}", file=sys.stderr)
             sys.exit(1)
-        for f in npz_files:
+        for f in tqdm(npz_files, desc="渲染 npz"):
             try:
-                render_one(f, args, out_path=None)
+                render_one(f, args, out_path=None, verbose=False)
             except Exception as e:
-                print(f"处理 {f} 失败: {e}", file=sys.stderr)
+                tqdm.write(f"处理 {f} 失败: {e}")
         return
 
-    # 单文件
+    # 单文件：默认 verbose 开启，可用 -q/--no-verbose 关闭
     out_path = Path(args.out) if args.out is not None else None
-    render_one(npz_path, args, out_path=out_path)
+    render_one(npz_path, args, out_path=out_path, verbose=args.verbose)
 
 
 if __name__ == "__main__":
