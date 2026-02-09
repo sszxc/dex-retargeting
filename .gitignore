@@ -16,3 +16,5 @@ imgui.ini
 /log
 /temp/
 *.egg-info
+data/*
+!data/frame_render.py

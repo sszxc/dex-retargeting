@@ -1,5 +1,6 @@
 import multiprocessing
 import time
+import threading
 from pathlib import Path
 from queue import Empty
 from typing import Optional
@@ -10,6 +11,7 @@ import tyro
 from loguru import logger
 import mujoco
 import mujoco.viewer
+from pynput import keyboard
 
 from dex_retargeting.constants import (
     RobotName,
@@ -568,9 +570,14 @@ def main(
     # ---------------- Mujoco 可视化（必须在主线程中运行） ----------------
     # 加载 Mujoco 场景：基于 teleop_scene_left.xml
     project_root = Path(__file__).absolute().parent.parent.parent
-    mj_xml_path = (
-        project_root / "src" / "mujoco" / "wonik_allegro" / "teleop_scene_left.xml"
-    )
+    # mj_xml_path = (
+    #     project_root / "src/mujoco/teleop_scene_left_035_power_drill/teleop_scene_left_035_power_drill.xml"
+    # )
+    mj_xml_path = Path("/mnt/1tb1/xuechao/MuJoCo-Asset-Pipeline/asset/scene/teleop_scene_left_077_rubiks_cube")
+    if mj_xml_path.is_dir():  # if it's a folder, look for the first xml file in the folder
+        mj_xml_path = next(mj_xml_path.glob("*.xml"), None)
+    else:
+        mj_xml_path = mj_xml_path
     if not mj_xml_path.exists():
         raise FileNotFoundError(f"Mujoco 场景文件不存在: {mj_xml_path}")
 
@@ -619,6 +626,38 @@ def main(
     detection_process.start()
     logger.info("检测与重定向子进程已启动")
 
+    # 键盘监听相关变量
+    keyboard_lock = threading.Lock()
+    save_requested = False  # 保存请求标志
+    should_exit = False  # 退出标志
+    last_save_time = 0.0
+    save_cooldown = 0.5  # 0.5秒冷却时间
+    
+    # 数据保存目录
+    data_dir = Path("data")  # Path(__file__).absolute().parent /
+    data_dir.mkdir(exist_ok=True)
+    # xml 文件名（不含扩展名），用于保存文件名
+    mj_xml_stem = Path(mj_xml_path).stem if mj_xml_path else "scene"
+
+    def on_press(key):
+        """键盘按下事件处理。必须用 nonlocal 才能修改外层的 save_requested / should_exit。"""
+        nonlocal save_requested, should_exit
+        try:
+            print(f"Keyboard pressed: {key}")
+            if hasattr(key, 'char') and key.char:
+                with keyboard_lock:
+                    if key.char == 's':
+                        save_requested = True
+                    elif key.char == 'q':
+                        should_exit = True
+        except AttributeError:
+            pass
+
+    # 启动键盘监听器（在后台线程中运行）
+    keyboard_listener = keyboard.Listener(on_press=on_press)
+    keyboard_listener.start()
+    logger.info("键盘监听已启动：按 's' 保存数据，按 'q' 退出")
+
     # 启动被动 viewer，在主线程中进行物理仿真与渲染
     with mujoco.viewer.launch_passive(model, data) as viewer:
         logger.info("Mujoco viewer 已启动")
@@ -627,7 +666,7 @@ def main(
         control_interval = 1.0 / control_rate_hz
         last_control_time = time.time()
 
-        while viewer.is_running():
+        while viewer.is_running() and not should_exit:
             now = time.time()
 
             # 从队列中取出最新的目标（关节角 + 手腕姿态）
@@ -649,7 +688,7 @@ def main(
                 # 手指关节目标：使用检测得到的 robot_qpos 作为期望位置
                 if latest_qpos is not None:
                     q = np.asarray(latest_qpos).reshape(-1)
-                    data.ctrl[0] = q[0]
+                    data.ctrl[0] = q[0] + 0.2
                     data.ctrl[1] = q[1]
                     data.ctrl[2] = q[2] - 0.6
 
@@ -668,11 +707,42 @@ def main(
             while data.time < now - sim_start:
                 mujoco.mj_step(model, data)
 
+            # 检查退出标志
+            with keyboard_lock:
+                if should_exit:
+                    logger.info("检测到退出按键 'q'，准备退出...")
+                    break
+                
+                # 检查保存请求（在主线程中检查冷却时间）
+                if save_requested:
+                    current_time = time.time()
+                    if current_time - last_save_time >= save_cooldown:
+                        # 当前仿真步数作为 time_step
+                        time_step = int(round(data.time / model.opt.timestep))
+                        filename = data_dir / f"{mj_xml_stem}_{time_step}.npz"
+                        # npz 中保存实际状态 data.qpos 与 mj_xml_path
+                        np.savez(
+                            str(filename),
+                            qpos=np.asarray(data.qpos).copy(),
+                            mj_xml_path=str(Path(mj_xml_path).resolve()),
+                        )
+                        logger.info(f"已保存到: {filename}")
+                        last_save_time = current_time
+                    else:
+                        remaining_cooldown = save_cooldown - (current_time - last_save_time)
+                        logger.debug(f"保存功能冷却中，还需等待 {remaining_cooldown:.2f} 秒")
+                    save_requested = False  # 清除保存请求
+
             # 同步 viewer
             viewer.sync()
 
         logger.info("Mujoco viewer 已关闭，准备结束子进程")
 
+    # 停止键盘监听器
+    keyboard_listener.stop()
+    keyboard_listener.join()
+    logger.info("键盘监听已停止")
+    
     # 关闭检测进程
     if detection_process.is_alive():
         detection_process.terminate()
