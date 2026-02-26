@@ -1,4 +1,5 @@
 import multiprocessing
+import sys
 import time
 import threading
 from pathlib import Path
@@ -6,6 +7,7 @@ from queue import Empty
 from typing import Optional
 
 import cv2
+import h5py
 import numpy as np
 import tyro
 from loguru import logger
@@ -245,19 +247,19 @@ def process_detection_and_retargeting(
                     ),
                 )
 
-            logger.debug(f"Joint angles: {robot_qpos.round(2)}")
+            # logger.debug(f"Joint angles: {robot_qpos.round(2)}")
 
             # 记录本帧关键步骤的耗时（debug 级别）
             try:
                 preprocess_time = timer.times["preprocess"][-1]
                 detect_time = timer.times["detect"][-1]
                 retarget_time = timer.times["retarget"][-1]
-                logger.debug(
-                    "Timing (s) - preprocess: {:.4f}, detect: {:.4f}, retarget: {:.4f}",
-                    preprocess_time,
-                    detect_time,
-                    retarget_time,
-                )
+                # logger.debug(
+                #     "Timing (s) - preprocess: {:.4f}, detect: {:.4f}, retarget: {:.4f}",
+                #     preprocess_time,
+                #     detect_time,
+                #     retarget_time,
+                # )
             except Exception:
                 # 计时信息仅用于调试分析，任何异常都不应影响主流程
                 pass
@@ -370,145 +372,23 @@ def process_test_qpos(qpos_queue: multiprocessing.Queue):
         logger.info("完成一轮所有维度测试，开始下一轮循环")
 
 
-def process_visualization_SAPIEN(qpos_queue: multiprocessing.Queue, robot_dir: str, config_path: str):
-    """
-    进程二：初始化仿真器以及渲染，读取关节角，更新状态，渲染
-    """
+# 无 XML 相机时使用的默认相机参数（与 data/frame_render.py 对齐）
+DEFAULT_LOOKAT = [0.0, 0.0, 0.2]
+DEFAULT_CAMERA_PARAMS = {"distance": 0.8, "elevation": -30, "azimuth": 0}
+
+
+def _make_dynamic_camera(par: dict) -> mujoco.MjvCamera:
+    """根据参数字典创建并配置一个 MjvCamera，look at DEFAULT_LOOKAT。"""
+    camera = mujoco.MjvCamera()
     try:
-        RetargetingConfig.set_default_urdf_dir(str(robot_dir))
-        logger.info(f"进程二：开始初始化仿真器，配置文件 {config_path}")
-
-        config = RetargetingConfig.load_from_file(config_path)
-        retargeting = config.build()
-
-        sapien.render.set_viewer_shader_dir("default")
-        sapien.render.set_camera_shader_dir("default")
-
-        # 初始化场景
-        scene = sapien.Scene()
-        render_mat = sapien.render.RenderMaterial()
-        render_mat.base_color = [0.06, 0.08, 0.12, 1]
-        render_mat.metallic = 0.0
-        render_mat.roughness = 0.9
-        render_mat.specular = 0.8
-        scene.add_ground(
-            -0.2, render_material=render_mat, render_half_size=[1000, 1000]
-        )
-
-        # 光照设置
-        scene.add_directional_light(np.array([1, 1, -1]), np.array([3, 3, 3]))
-        scene.add_point_light(np.array([2, 2, 2]), np.array([2, 2, 2]), shadow=False)
-        scene.add_point_light(np.array([2, -2, 2]), np.array([2, 2, 2]), shadow=False)
-        scene.set_environment_map(
-            create_dome_envmap(sky_color=[0.2, 0.2, 0.2], ground_color=[0.2, 0.2, 0.2])
-        )
-        scene.add_area_light_for_ray_tracing(
-            sapien.Pose([2, 1, 2], [0.707, 0, 0.707, 0]), np.array([1, 1, 1]), 5, 5
-        )
-
-        # 相机设置
-        cam = scene.add_camera(
-            name="Cheese!", width=600, height=600, fovy=1, near=0.1, far=10
-        )
-        cam.set_local_pose(sapien.Pose([0.50, 0, 0.0], [0, 0, 0, -1]))
-
-        # 初始化Viewer
-        viewer = Viewer()
-        viewer.set_scene(scene)
-        viewer.control_window.show_origin_frame = False
-        viewer.control_window.move_speed = 0.01
-        viewer.control_window.toggle_camera_lines(False)
-        viewer.set_camera_pose(cam.get_local_pose())
-
-        # 加载机器人
-        loader = scene.create_urdf_loader()
-        filepath = Path(config.urdf_path)
-        robot_name = filepath.stem
-        loader.load_multiple_collisions_from_file = True
-
-        # 根据机器人类型设置缩放
-        if "ability" in robot_name:
-            loader.scale = 1.5
-        elif "dclaw" in robot_name:
-            loader.scale = 1.25
-        elif "allegro" in robot_name:
-            loader.scale = 1.4
-        elif "shadow" in robot_name:
-            loader.scale = 0.9
-        elif "bhand" in robot_name:
-            loader.scale = 1.5
-        elif "leap" in robot_name:
-            loader.scale = 1.4
-        elif "svh" in robot_name:
-            loader.scale = 1.5
-
-        if "glb" not in robot_name:
-            filepath = str(filepath).replace(".urdf", "_glb.urdf")
-        else:
-            filepath = str(filepath)
-
-        robot = loader.load(filepath)
-
-        # 根据机器人类型设置初始姿态
-        if "ability" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.15]))
-        elif "shadow" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.2]))
-        elif "dclaw" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.15]))
-        elif "allegro" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.05]))
-        elif "bhand" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.2]))
-        elif "leap" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.15]))
-        elif "svh" in robot_name:
-            robot.set_pose(sapien.Pose([0, 0, -0.13]))
-
-        # 建立关节名称映射（retargeting的关节顺序 -> sapien的关节顺序）
-        sapien_joint_names = [joint.get_name() for joint in robot.get_active_joints()]
-        retargeting_joint_names = retargeting.joint_names
-        retargeting_to_sapien = np.array(
-            [retargeting_joint_names.index(name) for name in sapien_joint_names]
-        ).astype(int)
-
-        logger.info("进程二：开始渲染循环")
-
-        # 初始化完成后立即渲染一次，确保窗口显示出来
-        viewer.render()
-        logger.info("进程二：窗口已初始化")
-
-        last_render_time = time.time()
-        render_interval = 1.0 / 30.0  # 限制渲染频率到30fps
-
-        while True:
-            # 从队列读取关节角（清空旧数据，只保留最新的）
-            qpos = None
-            while True:
-                try:
-                    qpos = qpos_queue.get_nowait()
-                except Empty:
-                    break
-
-            # 更新机器人状态
-            if qpos is not None:
-                robot.set_qpos(qpos[retargeting_to_sapien])
-
-            # 限制渲染频率，但即使没有新数据也要持续渲染以保持窗口响应
-            current_time = time.time()
-            if current_time - last_render_time >= render_interval:
-                viewer.render()
-                last_render_time = current_time
-
-            # 如果没有新数据，稍微等待一下
-            if qpos is None:
-                time.sleep(0.01)
-    except Exception as e:
-        logger.error(f"进程二发生错误: {e}")
-        import traceback
-
-        traceback.print_exc()
-        raise
+        mujoco.mjv_defaultCamera(camera)
+    except AttributeError:
+        pass  # 部分版本无此函数，下面手动设置的参数已足够
+    camera.lookat[:] = DEFAULT_LOOKAT
+    camera.distance = par["distance"]
+    camera.elevation = par["elevation"]
+    camera.azimuth = par["azimuth"]
+    return camera
 
 
 def main(
@@ -518,6 +398,12 @@ def main(
     camera_path: Optional[str] = None,
     input_source: str = "webcam",
     config_path_override: Optional[str] = None,
+    dataset_dir: str = "data/hdf5",
+    start_key: str = "s",
+    stop_key: str = "e",
+    camera_names: list[str] = [],  # 为空时使用 XML 中定义的所有相机；非空时仅使用列出的相机
+    joint_indices: Optional[list[int]] = list(range(22)),
+    mj_xml_path: str = "/mnt/1tb1/xuechao/MuJoCo-Asset-Pipeline/asset/scene/freejoint/teleop_scene_left_077_rubiks_cube",
 ):
     """
     Detects the human hand pose from a video and translates the human pose trajectory into a robot pose trajectory.
@@ -531,6 +417,7 @@ def main(
         camera_path: the device path to feed to opencv to open the web camera. It will use 0 by default.
         input_source: Input source type, "webcam" (default) or "leap_motion".
         config_path_override: Optional custom config path. If provided, will override the default config path.
+        mj_xml_path: MuJoCo 场景 XML 文件路径或包含 .xml 的目录；为目录时自动取该目录下第一个 .xml。
     """
     if config_path_override is not None:
         config_path = Path(config_path_override)
@@ -568,21 +455,52 @@ def main(
     # visualization_process.join()
 
     # ---------------- Mujoco 可视化（必须在主线程中运行） ----------------
-    # 加载 Mujoco 场景：基于 teleop_scene_left.xml
-    project_root = Path(__file__).absolute().parent.parent.parent
-    # mj_xml_path = (
-    #     project_root / "src/mujoco/teleop_scene_left_035_power_drill/teleop_scene_left_035_power_drill.xml"
-    # )
-    mj_xml_path = Path("/mnt/1tb1/xuechao/MuJoCo-Asset-Pipeline/asset/scene/teleop_scene_left_077_rubiks_cube")
-    if mj_xml_path.is_dir():  # if it's a folder, look for the first xml file in the folder
-        mj_xml_path = next(mj_xml_path.glob("*.xml"), None)
-    else:
-        mj_xml_path = mj_xml_path
+    # 加载 Mujoco 场景
+    mj_xml_path = Path(mj_xml_path)
+    if mj_xml_path.is_dir():
+        first_xml = next(mj_xml_path.glob("*.xml"), None)
+        if first_xml is None:
+            raise FileNotFoundError(f"目录下未找到 .xml 文件: {mj_xml_path}")
+        mj_xml_path = first_xml
     if not mj_xml_path.exists():
         raise FileNotFoundError(f"Mujoco 场景文件不存在: {mj_xml_path}")
 
     model = mujoco.MjModel.from_xml_path(str(mj_xml_path))
     data = mujoco.MjData(model)
+
+    # 用于录制的相机列表：(相机名, 相机规格)；规格为 XML 相机名(str) 或 MjvCamera
+    if model.ncam > 0:
+        # XML 中所有相机名称
+        xml_camera_names = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, i)
+            for i in range(model.ncam)
+        ]
+        if not camera_names:
+            # 默认为空：使用 XML 中定义的所有相机
+            names_to_use = xml_camera_names
+        else:
+            # 非空：仅使用指定的相机（与 XML 中的名称匹配）
+            names_to_use = [n for n in camera_names if n in xml_camera_names]
+            if len(names_to_use) < len(camera_names):
+                unknown = [n for n in camera_names if n not in xml_camera_names]
+                logger.warning(f"以下相机名在 XML 中不存在，已忽略: {unknown}")
+        recording_camera_specs: list[tuple[str, str | mujoco.MjvCamera]] = [
+            (name, name) for name in names_to_use
+        ]
+        recording_camera_names = list(names_to_use)
+    else:
+        # XML 中无相机：使用内置默认相机
+        default_camera = _make_dynamic_camera(DEFAULT_CAMERA_PARAMS)
+        recording_camera_specs = [("default", default_camera)]
+        recording_camera_names = ["default"]
+        if camera_names and camera_names != ["default"]:
+            logger.info(
+                "场景 XML 中未定义相机，使用内置默认相机（相机名为 default）；"
+                "录制时请使用 --camera-names default"
+            )
+
+    # 离屏渲染器，用于采集图像
+    renderer = mujoco.Renderer(model, width=640, height=480)
 
     # 控制向量：前 6 个为 hand_root 的 6DOF（tx, ty, tz, rx, ry, rz），后 16 个为 Allegro 手指关节
     ROOT_CTRL_DIM = 6
@@ -614,6 +532,10 @@ def main(
             rz = 0.0
         return rz, ry, rx
 
+    # 归一化关节索引配置（如果提供的话）
+    if joint_indices is not None:
+        joint_indices = list(joint_indices)
+
     # 子进程：检测和重定向（子进程，避免阻塞主线程的渲染）
     detection_process = multiprocessing.Process(
         target=process_detection_and_retargeting,
@@ -628,27 +550,116 @@ def main(
 
     # 键盘监听相关变量
     keyboard_lock = threading.Lock()
-    save_requested = False  # 保存请求标志
     should_exit = False  # 退出标志
-    last_save_time = 0.0
-    save_cooldown = 0.5  # 0.5秒冷却时间
-    
-    # 数据保存目录
-    data_dir = Path("data")  # Path(__file__).absolute().parent /
-    data_dir.mkdir(exist_ok=True)
-    # xml 文件名（不含扩展名），用于保存文件名
+
+    record_start_requested = False
+    record_stop_requested = False
+    is_recording = False
+    episode_idx = 0
+    episode_buffers: Optional[dict[str, list]] = None
+
+    # 数据保存目录（HDF5）：在 dataset_dir 下再按当前日期时间创建子文件夹
+    dataset_root = Path(dataset_dir)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    dataset_dir_path = dataset_root / timestamp
+    dataset_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # 将启动的 Python 命令行保存到该子文件夹，便于后续查看参数配置
+    try:
+        cmd_str = " ".join(sys.argv)
+        cmd_file = dataset_dir_path / "command.txt"
+        cmd_file.write_text(cmd_str + "\n", encoding="utf-8")
+        logger.info(f"启动命令已保存到: {cmd_file}")
+    except Exception as e:
+        logger.warning(f"无法写入启动命令到 {dataset_dir_path}: {e}")
+    # xml 文件名（不含扩展名），用于保存到元数据
     mj_xml_stem = Path(mj_xml_path).stem if mj_xml_path else "scene"
 
+    def init_episode_buffers() -> dict[str, list]:
+        buffers: dict[str, list] = {
+            "/observations/qpos": [],
+            "/observations/qvel": [],
+            "/action": [],
+        }
+        for cam in recording_camera_names:
+            buffers[f"/observations/images/{cam}"] = []
+        return buffers
+
+    def save_episode(buffers: dict[str, list], idx: int) -> None:
+        if not buffers["/action"]:
+            logger.warning(f"Episode {idx} 没有任何 step，跳过保存。")
+            return
+
+        t0 = time.time()
+
+        # 关节与动作
+        qpos_array = np.stack(buffers["/observations/qpos"], axis=0)
+        qvel_array = np.stack(buffers["/observations/qvel"], axis=0)
+        action_array = np.stack(buffers["/action"], axis=0)
+
+        max_timesteps = min(
+            qpos_array.shape[0],
+            qvel_array.shape[0],
+            action_array.shape[0],
+        )
+        qpos_array = qpos_array[:max_timesteps]
+        qvel_array = qvel_array[:max_timesteps]
+        action_array = action_array[:max_timesteps]
+
+        q_dim = qpos_array.shape[1]
+        action_dim = action_array.shape[1]
+
+        # 图像
+        images_arrays: dict[str, np.ndarray] = {}
+        for cam in recording_camera_names:
+            key = f"/observations/images/{cam}"
+            cam_list = buffers.get(key, [])
+            if not cam_list:
+                continue
+            img_array = np.stack(cam_list, axis=0)
+            img_array = img_array[:max_timesteps]
+            images_arrays[cam] = img_array
+
+        dataset_path = dataset_dir_path / f"episode_{idx}.hdf5"
+        with h5py.File(str(dataset_path), "w", rdcc_nbytes=1024 ** 2 * 2) as root:
+            root.attrs["sim"] = True
+            root.attrs["mj_xml_path"] = str(Path(mj_xml_path).resolve())
+            root.attrs["scene"] = mj_xml_stem
+
+            obs = root.create_group("observations")
+            image_group = obs.create_group("images")
+
+            for cam, img_array in images_arrays.items():
+                H, W = img_array.shape[1:3]
+                dset = image_group.create_dataset(
+                    cam,
+                    data=img_array,
+                    dtype="uint8",
+                    chunks=(1, H, W, 3),
+                )
+                dset.attrs["CLASS"] = np.bytes_("IMAGE")
+
+            obs.create_dataset("qpos", data=qpos_array)
+            obs.create_dataset("qvel", data=qvel_array)
+            root.create_dataset("action", data=action_array)
+
+        logger.info(
+            f"Episode {idx} 已保存到 {dataset_path}，"
+            f"步数={max_timesteps}, q_dim={q_dim}, action_dim={action_dim}, "
+            f"耗时 {time.time() - t0:.2f} 秒"
+        )
+
     def on_press(key):
-        """键盘按下事件处理。必须用 nonlocal 才能修改外层的 save_requested / should_exit。"""
-        nonlocal save_requested, should_exit
+        """键盘按下事件处理。"""
+        nonlocal record_start_requested, record_stop_requested, should_exit
         try:
-            print(f"Keyboard pressed: {key}")
-            if hasattr(key, 'char') and key.char:
+            if hasattr(key, "char") and key.char:
                 with keyboard_lock:
-                    if key.char == 's':
-                        save_requested = True
-                    elif key.char == 'q':
+                    if key.char == start_key and not is_recording:
+                        record_start_requested = True
+                    elif key.char == stop_key and is_recording:
+                        record_stop_requested = True
+                    elif key.char == "q":
                         should_exit = True
         except AttributeError:
             pass
@@ -656,11 +667,18 @@ def main(
     # 启动键盘监听器（在后台线程中运行）
     keyboard_listener = keyboard.Listener(on_press=on_press)
     keyboard_listener.start()
-    logger.info("键盘监听已启动：按 's' 保存数据，按 'q' 退出")
+    logger.info(
+        f"键盘监听已启动：按 '{start_key}' 开始记录，按 '{stop_key}' 结束并保存，按 'q' 退出"
+    )
 
     # 启动被动 viewer，在主线程中进行物理仿真与渲染
     with mujoco.viewer.launch_passive(model, data) as viewer:
         logger.info("Mujoco viewer 已启动")
+        # 可视化相机所在的位置和名字
+        options = viewer.opt
+        mujoco.mjv_defaultOption(options)
+        options.flags[mujoco.mjtVisFlag.mjVIS_CAMERA] = True
+        options.label = mujoco.mjtLabel.mjLABEL_CAMERA
         sim_start = time.time()
         control_rate_hz = 60.0
         control_interval = 1.0 / control_rate_hz
@@ -701,6 +719,35 @@ def main(
                     data.ctrl[10:14] = q[14:18]  # 中指
                     data.ctrl[6:10] = q[18:22]  # 食指
 
+                    # 记录当前步的数据到缓存（若正在录制）
+                    if is_recording and episode_buffers is not None:
+                        if joint_indices is None:
+                            qpos_sample = np.asarray(data.qpos).copy()
+                            qvel_sample = np.asarray(data.qvel).copy()
+                        else:
+                            qpos_sample = np.asarray(data.qpos)[joint_indices].copy()
+                            qvel_sample = np.asarray(data.qvel)[joint_indices].copy()
+
+                        episode_buffers["/observations/qpos"].append(qpos_sample)
+                        episode_buffers["/observations/qvel"].append(qvel_sample)
+
+                        action_sample = np.asarray(latest_qpos).reshape(-1)
+                        episode_buffers["/action"].append(action_sample)
+
+                        for cam_name, cam_spec in recording_camera_specs:
+                            try:
+                                renderer.update_scene(data, camera=cam_spec)
+                                img = renderer.render()
+                                if img.dtype != np.uint8:
+                                    img = (np.clip(img, 0.0, 1.0) * 255).astype(
+                                        np.uint8
+                                    )
+                                episode_buffers[
+                                    f"/observations/images/{cam_name}"
+                                ].append(img)
+                            except Exception as e:
+                                logger.warning(f"渲染相机 {cam_name} 失败: {e}")
+
                 last_control_time = now
 
             # 按真实时间步长推进物理仿真
@@ -708,30 +755,30 @@ def main(
                 mujoco.mj_step(model, data)
 
             # 检查退出标志
+            pending_buffers = None
+            pending_episode_idx = None
             with keyboard_lock:
                 if should_exit:
                     logger.info("检测到退出按键 'q'，准备退出...")
                     break
                 
-                # 检查保存请求（在主线程中检查冷却时间）
-                if save_requested:
-                    current_time = time.time()
-                    if current_time - last_save_time >= save_cooldown:
-                        # 当前仿真步数作为 time_step
-                        time_step = int(round(data.time / model.opt.timestep))
-                        filename = data_dir / f"{mj_xml_stem}_{time_step}.npz"
-                        # npz 中保存实际状态 data.qpos 与 mj_xml_path
-                        np.savez(
-                            str(filename),
-                            qpos=np.asarray(data.qpos).copy(),
-                            mj_xml_path=str(Path(mj_xml_path).resolve()),
-                        )
-                        logger.info(f"已保存到: {filename}")
-                        last_save_time = current_time
-                    else:
-                        remaining_cooldown = save_cooldown - (current_time - last_save_time)
-                        logger.debug(f"保存功能冷却中，还需等待 {remaining_cooldown:.2f} 秒")
-                    save_requested = False  # 清除保存请求
+                if record_start_requested:
+                    episode_buffers = init_episode_buffers()
+                    is_recording = True
+                    record_start_requested = False
+                    logger.info(f"开始记录 episode_{episode_idx}")
+
+                if record_stop_requested:
+                    if episode_buffers is not None:
+                        pending_buffers = episode_buffers
+                        pending_episode_idx = episode_idx
+                        episode_idx += 1
+                        episode_buffers = None
+                    is_recording = False
+                    record_stop_requested = False
+
+            if pending_buffers is not None and pending_episode_idx is not None:
+                save_episode(pending_buffers, pending_episode_idx)
 
             # 同步 viewer
             viewer.sync()
