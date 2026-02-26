@@ -34,7 +34,18 @@
 python example/vector_retargeting/show_realtime_retargeting.py --robot-name allegro --retargeting-type dexpilot --hand-type right
 
 mjpython example/vector_retargeting/my_retargeting_mujoco.py --robot-name allegro --retargeting-type position --hand-type left --input-source leap_motion --config_path_override src/dex_retargeting/configs/my/offline_absolute_pose_allegro_hand_left.yml
+
+# record the data (s: start episode, e: end and save to HDF5, q: quit)
+mjpython example/vector_retargeting/my_retargeting_mujoco.py --robot-name allegro --retargeting-type position --hand-type left --input-source leap_motion --config_path_override src/dex_retargeting/configs/my/offline_absolute_pose_allegro_hand_left.yml
+
+# optional: --mj-xml-path <path> 指定 MuJoCo 场景 XML 或包含 .xml 的目录，默认 rubiks_cube 场景
+# 若场景 XML 中未定义相机，程序会使用内置默认相机，录制时相机名为 default，可传 --camera-names default
 ```
+
+
+![Recording](media/demo.webp)
+
+
 
 
 <div align="center">
