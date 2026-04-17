@@ -419,6 +419,32 @@ def main(
         config_path_override: Optional custom config path. If provided, will override the default config path.
         mj_xml_path: MuJoCo 场景 XML 文件路径或包含 .xml 的目录；为目录时自动取该目录下第一个 .xml。
     """
+    print(
+        f"""
+============================================================
+本脚本用于：从 Webcam 或 Leap Motion 中实时检测单手 3D 关键点，
+并将人手姿态实时重定向到指定机器人手，在 MuJoCo 场景中进行可视化，
+并按需录制包含关节、动作和相机图像的数据集（HDF5）。
+
+基本使用方法：
+1. 配置好 Python 环境和相机/Leap Motion 设备。
+2. 在项目根目录下运行：
+   python example/vector_retargeting/my_retargeting_mujoco.py --help
+   查看所有可用参数（如 robot_name、retargeting_type、hand_type、input_source、mj_xml_path 等）。
+3. 正式运行时根据需要指定参数（例如选择左/右手、使用 webcam 或 leap_motion、指定 MuJoCo 场景 XML）。
+
+交互与录制：
+- 按键 '{start_key}'：开始录制一段 episode（记录关节、动作及相机图像）。
+- 按键 '{stop_key}'：结束当前 episode 并保存为 HDF5 文件。
+- 按键 'q'：退出程序并关闭 MuJoCo viewer 与检测子进程。
+
+数据保存：
+- 所有录制的数据会保存在参数 dataset_dir 对应的目录下，
+  并自动创建带时间戳的子目录，里面包含 command.txt（启动命令）
+  以及 episode_*.hdf5 文件。
+============================================================
+"""
+    )
     if config_path_override is not None:
         config_path = Path(config_path_override)
     else:
@@ -731,7 +757,7 @@ def main(
                         episode_buffers["/observations/qpos"].append(qpos_sample)
                         episode_buffers["/observations/qvel"].append(qvel_sample)
 
-                        action_sample = np.asarray(latest_qpos).reshape(-1)
+                        action_sample = np.asarray(data.ctrl).copy()
                         episode_buffers["/action"].append(action_sample)
 
                         for cam_name, cam_spec in recording_camera_specs:
@@ -761,7 +787,7 @@ def main(
                 if should_exit:
                     logger.info("检测到退出按键 'q'，准备退出...")
                     break
-                
+
                 if record_start_requested:
                     episode_buffers = init_episode_buffers()
                     is_recording = True
@@ -789,7 +815,7 @@ def main(
     keyboard_listener.stop()
     keyboard_listener.join()
     logger.info("键盘监听已停止")
-    
+
     # 关闭检测进程
     if detection_process.is_alive():
         detection_process.terminate()
