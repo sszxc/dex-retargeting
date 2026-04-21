@@ -1,5 +1,0 @@
-retargeting:
-  type: joint
-  urdf_path: allegro_hand/allegro_hand_left.urdf
-  add_dummy_free_joint: true
-  low_pass_alpha: 1  # 0.2

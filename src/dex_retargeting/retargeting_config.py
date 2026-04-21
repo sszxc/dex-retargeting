@@ -113,7 +113,7 @@ class RetargetingConfig:
         elif self.type == "dexpilot":
             if self.finger_tip_link_names is None or self.wrist_link_name is None:
                 raise ValueError(
-                    "Position retargeting requires: finger_tip_link_names + wrist_link_name"
+                    "DexPilot retargeting requires: finger_tip_link_names + wrist_link_name"
                 )
             if self.target_link_human_indices is not None:
                 print(

@@ -29,12 +29,13 @@ OPERATOR2MANO_LEFT = np.array(
 )
 
 
-CAMERA2TABLE = np.array(
+DEFAULT_CAMERA2TABLE = np.array(
     [
-        [1, 0, 0],
-        [0, 0, -1],
-        [0, 1, 0],
-    ]
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0],
+    ],
+    dtype=np.float64,
 )
 
 def wait_until(condition: Callable[[], bool], timeout: float = 5, poll_delay: float = 0.01):
@@ -58,6 +59,7 @@ class LeapMotionHandDetector:
         self,
         hand_type: str = "Right",
         tracking_mode: leap.TrackingMode = leap.TrackingMode.Desktop,
+        camera2table: Optional[np.ndarray] = None,
     ):
         """
         初始化 Leap Motion 检测器
@@ -68,6 +70,11 @@ class LeapMotionHandDetector:
         """
         self.hand_type = hand_type
         self.tracking_mode = tracking_mode
+        self.camera2table = (
+            np.asarray(camera2table, dtype=np.float64)
+            if camera2table is not None
+            else DEFAULT_CAMERA2TABLE
+        )
 
         # 根据手部类型选择对应的坐标转换矩阵
         self.operator2mano = (
@@ -272,7 +279,7 @@ class LeapMotionHandDetector:
         if keypoint_3d_global is None:
             return 0, None, None, None, None
 
-        keypoint_3d_global = keypoint_3d_global @ CAMERA2TABLE.T
+        keypoint_3d_global = keypoint_3d_global @ self.camera2table.T
 
         # 保存全局位置用于可视化
         keypoint_3d_for_vis = keypoint_3d_global.copy()
@@ -304,7 +311,7 @@ class LeapMotionHandDetector:
         Returns:
             形状为 (21, 2) 的2D关键点数组（像素坐标）
         """
-        keypoint_3d = keypoint_3d @ CAMERA2TABLE
+        keypoint_3d = keypoint_3d @ self.camera2table
         # 将单位从米转换回毫米（用于投影计算）
         keypoints_mm = keypoint_3d * 1000.0
 
