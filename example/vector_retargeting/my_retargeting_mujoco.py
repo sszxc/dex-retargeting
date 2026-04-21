@@ -71,7 +71,7 @@ def process_detection_and_retargeting(
         detector = SingleHandDetector(hand_type=hand_type, selfie=False)
         # 打开相机
         if camera_path is None:
-            camera_id = find_camera_with_resolution(target_width=1280, target_height=720)
+            camera_id = find_camera_with_resolution(target_width=1280, target_height=720, default_camera_id=0)
             cap = cv2.VideoCapture(camera_id)
         else:
             cap = cv2.VideoCapture(camera_path)
@@ -403,7 +403,7 @@ def main(
     stop_key: str = "e",
     camera_names: list[str] = [],  # 为空时使用 XML 中定义的所有相机；非空时仅使用列出的相机
     joint_indices: Optional[list[int]] = list(range(22)),
-    mj_xml_path: str = "/mnt/1tb1/xuechao/MuJoCo-Asset-Pipeline/asset/scene/freejoint/teleop_scene_left_077_rubiks_cube",
+    mj_xml_path: str = "/home/lab/Documents/teleop_scene_left_077_rubiks_cube",
 ):
     """
     Detects the human hand pose from a video and translates the human pose trajectory into a robot pose trajectory.

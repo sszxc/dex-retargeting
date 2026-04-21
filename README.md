@@ -1,31 +1,44 @@
 # Dex Retargeting
 ### Installation on macOS/Linux
-1. (for macOS only) Install Vulkan SDK from [LunarXchange](https://vulkan.lunarg.com/sdk/home).
-2. Install Leap SDK from [Ultraleap](https://www.ultraleap.com/downloads/leap-motion-controller-2/).
-3. Build LeapC Python Bindings from source: [ultraleap/leapc-python-bindings: Gemini LeapC Python Bindings](https://github.com/ultraleap/leapc-python-bindings?tab=readme-ov-file#installation)
-   ```shell
-   pip install -e leapc-python-api  # key steps
-   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/ultraleap-hand-tracking-service  # recommended to add to .bashrc
-   ```
-
-4. clone repo
+1. clone this repo and download the assets
     ```shell
     git clone https://github.com/sszxc/dex-retargeting.git
     cd dex-retargeting
     git submodule update --init --recursive  # download the assets
     ```
 
-5. Create conda environment
+2. Create conda environment
+    ```shell
+    conda env create -f environment.yml
+    pip install torch torchvision  # you may want to refer to the official website
+    pip install -e ".[example]"  # ignore sapien version requirement here
+    ```
+    Deprecated:
     ```shell
     conda create -n dex_retargeting python=3.12.12
     conda activate dex_retargeting
-    pip install torch torchvision
+    pip install torch torchvision  # you may want to refer to the official website
     pip install sapien==3.0.2
     pip install cmeel-boost==1.87.0.1  # not sure which version securely works
     pip install mediapipe==0.10.13
     pip install -e ".[example]"  # ignore sapien version requirement here
-
     pip install mujoco
+    ```
+
+3. Install required dependencies for Leap Motion Camera:
+
+  a. (for macOS only) Install Vulkan SDK from [LunarXchange](https://vulkan.lunarg.com/sdk/home).
+
+  b. Install Leap SDK from [Ultraleap](https://www.ultraleap.com/downloads/leap-motion-controller-2/).
+    ```
+    sudo dpkg -i tracking-software-linux-x64-6.2.0.deb.deb
+    ```
+
+  c. Build LeapC Python Bindings from source: [ultraleap/leapc-python-bindings: Gemini LeapC Python Bindings](https://github.com/ultraleap/leapc-python-bindings?tab=readme-ov-file#installation), for Linux tpyically check these steps: [ultraleap/leapc-python-bindings: Gemini LeapC Python Bindings](https://github.com/ultraleap/leapc-python-bindings#missing-compiled-module)
+    ```shell
+    git clone https://github.com/ultraleap/leapc-python-bindings.git
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/ultraleap-hand-tracking-service  # sometimes you need this, recommended to add to .bashrc
+    python examples/visualiser.py  # test if the bindings are working
     ```
 
 

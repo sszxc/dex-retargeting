@@ -23,6 +23,7 @@ def find_camera_with_resolution(
     target_width: int = 1280,
     target_height: int = 720,
     max_cameras: int = 10,
+    default_camera_id: int = 0,
 ) -> Optional[int]:
     """
     查找支持指定分辨率的相机并返回其 ID。
@@ -37,7 +38,7 @@ def find_camera_with_resolution(
     
     Returns:
         如果找到支持该分辨率的相机，返回相机 ID (int)
-        如果未找到，返回 None
+        如果未找到，返回 default_camera_id
     """
     for i in range(max_cameras):
         info = get_camera_info(i)
@@ -48,7 +49,7 @@ def find_camera_with_resolution(
         else:
             break
     
-    return None
+    return default_camera_id
 
 if __name__ == "__main__":
     camera_id = find_camera_with_resolution(target_width=1280, target_height=720)
