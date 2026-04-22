@@ -72,10 +72,10 @@ simulation:
   - 0.2
   - 0.0
   - -0.6
-  root_rotation_offset_euler_zyx:
-  - 0.0
-  - 0.0
-  - 0.0
+  wrist_rotation_calib_matrix:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
   joint_indices:
   - 0
   - 1

@@ -110,7 +110,11 @@ def convert_one(
                 9,
             ],
             "root_position_offset": [0.2, 0.0, -0.6],
-            "root_rotation_offset_euler_zyx": [0.0, 0.0, 0.0],
+            "wrist_rotation_calib_matrix": [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
             "joint_indices": list(range(22)),
             "camera_names": [],
             "control_rate_hz": 60.0,

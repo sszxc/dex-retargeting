@@ -6,8 +6,19 @@ from typing import Optional
 import mujoco
 import numpy as np
 from loguru import logger
+from scipy.spatial.transform import Rotation as SciRotation
 
 from runtime_config import SimulationConfig
+
+
+def _quat_wxyz_to_rotmat(quat: np.ndarray) -> np.ndarray:
+    qw, qx, qy, qz = np.asarray(quat, dtype=np.float64).reshape(4)
+    return SciRotation.from_quat([qx, qy, qz, qw]).as_matrix()
+
+
+def _rotmat_to_quat_wxyz(rotmat: np.ndarray) -> np.ndarray:
+    qx, qy, qz, qw = SciRotation.from_matrix(rotmat).as_quat()
+    return np.array([qw, qx, qy, qz], dtype=np.float64)
 
 
 def _quat_wxyz_to_euler_zyx(quat: np.ndarray) -> np.ndarray:
@@ -65,7 +76,14 @@ class MujocoHandController:
             return
 
         q = np.asarray(qpos, dtype=np.float64).reshape(-1)
-        finger_values = q[6:22] if q.shape[0] >= 22 else q
+        n_finger = len(self.simulation.finger_ctrl_indices)
+        need = 6 + n_finger
+        if q.shape[0] < need:
+            logger.warning(
+                f"hand qpos 长度不足: 需要 {need}（dummy 6 + 手指 {n_finger}），实际 {q.shape[0]}，跳过本帧控制"
+            )
+            return
+        finger_values = q[6:need]
 
         for ctrl_idx, value in zip(self.simulation.finger_ctrl_indices, finger_values):
             data.ctrl[int(ctrl_idx)] = value
@@ -75,10 +93,18 @@ class MujocoHandController:
             if mocap_id is None:
                 logger.warning("wrist_mocap=True 但未解析到 mocap id，跳过 wrist 输出")
                 return
+            pos_off = np.asarray(self.simulation.root_position_offset, dtype=np.float64)
+            r_cal = np.asarray(
+                self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
+            ).reshape(3, 3)
             if wrist_pos is not None:
-                data.mocap_pos[mocap_id] = np.asarray(wrist_pos, dtype=np.float64)
+                data.mocap_pos[mocap_id] = (
+                    np.asarray(wrist_pos, dtype=np.float64) + pos_off
+                )
             if wrist_quat is not None:
-                data.mocap_quat[mocap_id] = np.asarray(wrist_quat, dtype=np.float64)
+                quat = np.asarray(wrist_quat, dtype=np.float64).reshape(4)
+                r_w = _quat_wxyz_to_rotmat(quat)
+                data.mocap_quat[mocap_id] = _rotmat_to_quat_wxyz(r_cal @ r_w)
             return
 
         if q.shape[0] >= 6:
@@ -92,7 +118,12 @@ class MujocoHandController:
 
         # 兜底：若 q 不包含 root，但有 wrist quaternion，则用其驱动 root 旋转
         if wrist_quat is not None:
-            euler = _quat_wxyz_to_euler_zyx(np.asarray(wrist_quat, dtype=np.float64))
-            euler += np.asarray(self.simulation.root_rotation_offset_euler_zyx, dtype=np.float64)
+            r_cal = np.asarray(
+                self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
+            ).reshape(3, 3)
+            r_out = r_cal @ _quat_wxyz_to_rotmat(
+                np.asarray(wrist_quat, dtype=np.float64).reshape(4)
+            )
+            euler = _quat_wxyz_to_euler_zyx(_rotmat_to_quat_wxyz(r_out))
             for i, ctrl_idx in enumerate(self.simulation.root_ctrl_indices[3:6]):
                 data.ctrl[int(ctrl_idx)] = euler[i]

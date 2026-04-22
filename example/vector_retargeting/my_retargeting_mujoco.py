@@ -161,6 +161,20 @@ def main(
     mj_xml_path = _resolve_xml_path(runtime_cfg.simulation.mj_xml_path)
     model = mujoco.MjModel.from_xml_path(str(mj_xml_path))
     data = mujoco.MjData(model)
+
+    # 可选：启动后立即加载指定 keyframe（MJCF <keyframe name="...">）
+    if runtime_cfg.simulation.startup_keyframe:
+        kf_name = runtime_cfg.simulation.startup_keyframe
+        kf_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, kf_name)
+        if kf_id < 0:
+            logger.warning(
+                f"startup_keyframe='{kf_name}' 未在模型中找到（请检查 XML 里的 <keyframe> name），将忽略。"
+            )
+        else:
+            mujoco.mj_resetDataKeyframe(model, data, kf_id)
+            mujoco.mj_forward(model, data)
+            logger.info(f"已加载 startup_keyframe='{kf_name}' (id={kf_id})")
+
     controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
 
     recording_camera_specs, recording_camera_names = _setup_recording_cameras(

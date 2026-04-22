@@ -16,7 +16,7 @@ sensor:
 retargeting:
   mode: single_left
   left:
-    urdf_path: allegro_hand/allegro_hand_left.urdf
+    urdf_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_left.urdf
     add_dummy_free_joint: true
     optimizer:
       type: joint
@@ -24,7 +24,8 @@ retargeting:
         low_pass_alpha: 1
   right: {}
 simulation:
-  mj_xml_path: /home/lab/Documents/teleop_scene_left_077_rubiks_cube
+  mj_xml_path: /home/lab/Documents/proto5_description/Metaworld/metaworld/assets/ur5e_honda_hand/ur5e_hand_basketball.xml
+  startup_keyframe: home
   control_hand: left
   root_ctrl_indices:
   - 0
@@ -34,30 +35,32 @@ simulation:
   - 4
   - 5
   finger_ctrl_indices:
-  - 14
-  - 15
-  - 16
-  - 17
-  - 18
-  - 19
-  - 20
-  - 21
-  - 10
-  - 11
-  - 12
-  - 13
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
   - 6
   - 7
   - 8
   - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 15
+  - 16
+  - 17
   root_position_offset:
-  - 0.2
   - 0.0
-  - -0.6
+  - 0.5
+  - 0.2
   wrist_rotation_calib_matrix:
-    - [1.0, 0.0, 0.0]
-    - [0.0, 1.0, 0.0]
-    - [0.0, 0.0, 1.0]
+    - [0, -1, 0]
+    - [0, 0, 1]
+    - [-1, 0, 0]
   joint_indices:
   - 0
   - 1
@@ -81,10 +84,11 @@ simulation:
   - 19
   - 20
   - 21
+  - 22
+  - 23
   camera_names: []
   control_rate_hz: 60.0
   mocap:
-    wrist_mocap: false
-    mocap_body_name: null
+    wrist_mocap: true
+    mocap_body_name: mocap
     mocap_id: null
-

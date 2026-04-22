@@ -806,6 +806,123 @@ class DexPilotOptimizer(Optimizer):
         return objective
 
 
+def allegro_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.ndarray:
+    """Leap 21 点 joint_pos -> Allegro 左手 pinocchio 顺序（dummy6 + 16 关节），长度 22。"""
+    joint_pos = np.asarray(joint_pos, dtype=np.float64)
+    result = np.zeros(22, dtype=np.float64)
+    p0, p5, p9, p13 = joint_pos[0], joint_pos[5], joint_pos[9], joint_pos[13]
+    v1 = p5 - p0
+    v2 = p9 - p0
+    v3 = p13 - p0
+    n1 = np.cross(v1, v2)
+    n2 = np.cross(v2, v3)
+    n3 = np.cross(v3, v1)
+    plane_normal = (n1 + n2 + n3) / 3.0
+    plane_normal = plane_normal / np.linalg.norm(plane_normal)
+    x_dir = p13 - p0
+    x_dir = x_dir / np.linalg.norm(x_dir)
+    y_dir = plane_normal
+    z_dir = np.cross(x_dir, y_dir)
+    z_dir = z_dir / np.linalg.norm(z_dir)
+    y_dir = np.cross(z_dir, x_dir)
+    y_dir = y_dir / np.linalg.norm(y_dir)
+    rotmat = np.stack([x_dir, y_dir, z_dir], axis=1)
+    SHIFTED = np.array(
+        [
+            [0, 0, 1],
+            [-1, 0, 0],
+            [0, -1, 0],
+        ],
+        dtype=np.float64,
+    )
+    rotmat = rotmat @ SHIFTED
+    import scipy.spatial.transform
+
+    euler_xyz = scipy.spatial.transform.Rotation.from_matrix(rotmat).as_euler("XYZ")
+    result[3:6] = euler_xyz
+    result[0:3] = joint_pos[0] + 0.03 * x_dir
+
+    def angle_between_vectors(v1, v2):
+        if np.linalg.norm(v1) < 1e-8 or np.linalg.norm(v2) < 1e-8:
+            return 0.0
+        v1_norm = v1 / np.linalg.norm(v1)
+        v2_norm = v2 / np.linalg.norm(v2)
+        dot = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
+        return np.arccos(dot)
+
+    def angle_between_plane_and_vector(plane_vector1, plane_vector2, vector):
+        if np.linalg.norm(plane_vector1) < 1e-8 or np.linalg.norm(plane_vector2) < 1e-8:
+            return 0.0
+        if np.linalg.norm(vector) < 1e-8:
+            return 0.0
+        plane_normal = np.cross(plane_vector1, plane_vector2)
+        norm_normal = np.linalg.norm(plane_normal)
+        if norm_normal < 1e-8:
+            return 0.0
+        plane_normal = plane_normal / norm_normal
+        vector_norm = vector / np.linalg.norm(vector)
+        dot = np.clip(np.dot(plane_normal, vector_norm), -1.0, 1.0)
+        angle_with_normal = np.arccos(dot)
+        return abs(np.pi / 2.0 - angle_with_normal)
+
+    from dex_retargeting.thumb_retarget import calculate_thumb_angles
+
+    vec_in_new_coord = rotmat.T @ (joint_pos[3] - joint_pos[2])
+    _success, _angles, _error, _actual_vec = calculate_thumb_angles(vec_in_new_coord)
+    result[10:13] = _angles
+
+    result[13] = angle_between_vectors(
+        joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]
+    )
+
+    result[18] = angle_between_plane_and_vector(
+        joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir
+    )
+    result[21] = angle_between_vectors(
+        joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7]
+    )
+    result[19] = angle_between_vectors(
+        joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6]
+    )
+    result[20] = 0.5 * (result[19] + result[21])
+
+    result[14] = angle_between_plane_and_vector(
+        joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], y_dir
+    )
+    result[17] = angle_between_vectors(
+        joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11]
+    )
+    result[16] = angle_between_vectors(
+        joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10]
+    )
+    result[15] = 0.5 * (result[14] + result[16])
+
+    result[6] = angle_between_plane_and_vector(
+        joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir
+    )
+    result[9] = angle_between_vectors(
+        joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15]
+    )
+    result[8] = angle_between_vectors(
+        joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14]
+    )
+    result[7] = 0.5 * (result[6] + result[8])
+    return result.astype(np.float32)
+
+
+def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.ndarray:
+    """Proto5 左手：复用 Allegro 几何，映射到 pinocchio 关节顺序（dummy6 + WRZ,WRY + 四指各4关节）。"""
+    a = allegro_left_dummy_qpos_from_leap_joint_pos(joint_pos)
+    result = np.zeros(24, dtype=np.float32)
+    result[0:6] = a[0:6]
+    result[6:8] = 0.0
+    result[8:12] = a[18:22]
+    result[12:16] = a[14:18]
+    result[16:20] = a[6:10]
+    result[20:24] = a[10:14]
+    return result
+
+
 class JointOptimizer(Optimizer):
     """关节优化器 - 从手部关键点 3D 位置直接计算机器人关节角
 
@@ -815,8 +932,8 @@ class JointOptimizer(Optimizer):
     """
     retargeting_type = "JOINT"
 
-    # 当前支持从 joint_pos 直接算关节角的机器人（urdf 的 stem，如 allegro_hand_left）
-    _SUPPORTED_ROBOTS = frozenset({"allegro_hand_left"})
+    # 当前支持从 joint_pos 直接算关节角的机器人（urdf 的 stem）
+    _SUPPORTED_ROBOTS = frozenset({"allegro_hand_left", "hmf_hand_proto5_release_left"})
 
     def __init__(
         self,
@@ -855,139 +972,21 @@ class JointOptimizer(Optimizer):
                 f"JointOptimizer: unsupported robot {self.robot_name!r}; "
                 f"supported: {sorted(self._SUPPORTED_ROBOTS)}."
             )
-        if self.robot_name == 'allegro_hand_left':
-            result = np.zeros(self.opt_dof)
-            # assume always has dummy joint for the root
-            # calculate the rotation
-            # 使用 joint_pos[[0, 5, 9, 13], :] 计算平面，获得 y 方向向量
-            p0, p5, p9, p13 = joint_pos[0], joint_pos[5], joint_pos[9], joint_pos[13]
-            # 计算平面的法向量（拟合平面：四点，三角面法线平均）
-            v1 = p5 - p0
-            v2 = p9 - p0
-            v3 = p13 - p0
-            # 用三对边的外积平均作为法线
-            n1 = np.cross(v1, v2)
-            n2 = np.cross(v2, v3)
-            n3 = np.cross(v3, v1)
-            plane_normal = (n1 + n2 + n3) / 3.0
-            plane_normal = plane_normal / np.linalg.norm(plane_normal)
-            # x 方向: index 0 -> 13
-            x_dir = p13 - p0
-            x_dir = x_dir / np.linalg.norm(x_dir)
-            # z 方向: 右手系 x × y
-            y_dir = plane_normal
-            z_dir = np.cross(x_dir, y_dir)
-            z_dir = z_dir / np.linalg.norm(z_dir)
-            # 纠正y，使其正交于x和z（以防数值不正交）
-            y_dir = np.cross(z_dir, x_dir)
-            y_dir = y_dir / np.linalg.norm(y_dir)
-            # 构造旋转矩阵 [x_dir, y_dir, z_dir] 作为列
-            rotmat = np.stack([x_dir, y_dir, z_dir], axis=1)  # (3, 3)
-            SHIFTED = np.array(
-                [
-                    [0, 0, 1],
-                    [-1, 0, 0],
-                    [0, -1, 0],
-                ]
-            )
-            rotmat = rotmat @ SHIFTED
-            # 转为 XYZ 欧拉角 (rx, ry, rz)，弧度
-            import scipy.spatial.transform
-            euler_xyz = scipy.spatial.transform.Rotation.from_matrix(rotmat).as_euler("XYZ")
-            result[3:6] = euler_xyz
-            result[0:3] = joint_pos[0] + 0.03 * x_dir
-            # result[0:3] = [0.0, 0.0, 0.5]  # fix
-
-            def angle_between_vectors(v1, v2):
-                v1_norm = v1 / np.linalg.norm(v1)
-                v2_norm = v2 / np.linalg.norm(v2)
-                if np.linalg.norm(v1) < 1e-8 or np.linalg.norm(v2) < 1e-8:
-                    return 0.0
-                dot = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
-                return np.arccos(dot)
-
-            def angle_between_plane_and_vector(plane_vector1, plane_vector2, vector):
-                """计算平面与向量之间的角度。
-                
-                平面由两个向量 plane_vector1 和 plane_vector2 定义。
-                返回向量与平面之间的角度（弧度），范围 [0, π/2]。
-                
-                Args:
-                    plane_vector1: 定义平面的第一个向量
-                    plane_vector2: 定义平面的第二个向量
-                    vector: 要计算角度的向量
-                    
-                Returns:
-                    向量与平面之间的角度（弧度）
-                """
-                # 检查输入向量的有效性
-                if np.linalg.norm(plane_vector1) < 1e-8 or np.linalg.norm(plane_vector2) < 1e-8:
-                    return 0.0
-                if np.linalg.norm(vector) < 1e-8:
-                    return 0.0
-                
-                # 计算平面的法向量（归一化）
-                plane_normal = np.cross(plane_vector1, plane_vector2)
-                norm_normal = np.linalg.norm(plane_normal)
-                if norm_normal < 1e-8:
-                    # 两个向量共线，无法定义平面
-                    return 0.0
-                plane_normal = plane_normal / norm_normal
-                
-                # 归一化输入向量
-                vector_norm = vector / np.linalg.norm(vector)
-                
-                # 计算法向量与向量的夹角
-                dot = np.clip(np.dot(plane_normal, vector_norm), -1.0, 1.0)
-                angle_with_normal = np.arccos(dot)
-                
-                # 向量与平面的夹角 = π/2 - 法向量与向量的夹角
-                # 使用 abs 确保角度在 [0, π/2] 范围内
-                angle = abs(np.pi / 2.0 - angle_with_normal)
-                
-                return angle
-
-            # calculate the joints
-            # thumb
-            # result[10] = angle_between_plane_and_vector(x_dir, z_dir, joint_pos[3] - joint_pos[0])
-            # result[11] = angle_between_plane_and_vector(x_dir, joint_pos[0] - joint_pos[3], joint_pos[4] - joint_pos[2])
-            # result[12] = angle_between_vectors(joint_pos[2] - joint_pos[0], joint_pos[3] - joint_pos[2])
-            from dex_retargeting.thumb_retarget import calculate_thumb_angles
-            # 构造从 world 坐标系到 local 坐标系的旋转矩阵
-            vec_in_new_coord = rotmat.T @ (joint_pos[3] - joint_pos[2])
-            success, _angles, error, actual_vec = calculate_thumb_angles(vec_in_new_coord)
-            result[10:13] = _angles
-
-            result[13] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3])
-
-            # index
-            result[18] = angle_between_plane_and_vector(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir)
-            # result[19] = angle_between_vectors(joint_pos[5] - joint_pos[0], joint_pos[6] - joint_pos[5])
-            # result[20] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])
-            result[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7])
-            result[19] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])
-            result[20] = 0.5 * (result[19] + result[21])
-            # middle
-            result[14] = angle_between_plane_and_vector(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], y_dir)
-            # result[15] = angle_between_vectors(joint_pos[9] - joint_pos[0], joint_pos[10] - joint_pos[9])
-            # result[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])
-            result[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11])
-            result[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])
-            result[15] = 0.5 * (result[14] + result[16])
-            # ring
-            result[6] = angle_between_plane_and_vector(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir)
-            # result[7] = angle_between_vectors(joint_pos[13] - joint_pos[0], joint_pos[14] - joint_pos[13])
-            # result[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14])
-            result[9] = angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15])
-            result[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14])
-            result[7] = 0.5 * (result[6] + result[8])
-            return result
-        else:
-            raise ValueError(f"JointOptimizer: unsupported robot name: {self.robot_name}")
-        # # 占位：返回关节限位内的随机值；正式实现时用 joint_pos 计算
-        # lo = self.robot.joint_limits[self.idx_pin2target, 0]
-        # hi = self.robot.joint_limits[self.idx_pin2target, 1]
-        # return np.random.uniform(lo, hi).astype(np.float32)
+        if self.robot_name == "allegro_hand_left":
+            raw = allegro_left_dummy_qpos_from_leap_joint_pos(joint_pos)
+            if raw.shape[0] != self.opt_dof:
+                raise ValueError(
+                    f"JointOptimizer: allegro 期望 opt_dof=22，当前为 {self.opt_dof}"
+                )
+            return raw
+        if self.robot_name == "hmf_hand_proto5_release_left":
+            raw = hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos)
+            if raw.shape[0] != self.opt_dof:
+                raise ValueError(
+                    f"JointOptimizer: Proto5 期望 opt_dof=24，当前为 {self.opt_dof}"
+                )
+            return raw
+        raise ValueError(f"JointOptimizer: unsupported robot name: {self.robot_name}")
 
     def retarget(self, ref_value: np.ndarray, fixed_qpos: np.ndarray, last_qpos: np.ndarray):
         """

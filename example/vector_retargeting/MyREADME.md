@@ -131,7 +131,7 @@ retargeting:
 - `root_ctrl_indices`: 6 个 ctrl index（root 6DoF 对应的 actuator index）
 - `finger_ctrl_indices`: 16 个 ctrl index（手指 actuator 顺序映射）
 - `root_position_offset`: root 位置偏置（用于坐标对齐）
-- `root_rotation_offset_euler_zyx`: root 欧拉角偏置（可选）
+- `wrist_rotation_calib_matrix`: 3×3 手腕旋转左乘标定矩阵，满足 `R_out = R_cal @ R_wrist`（可选，默认单位阵）。仍支持已弃用的 `root_rotation_offset_euler_zyx`，会按固定轴 ZYX 合成等效矩阵
 - `control_rate_hz`: 写 ctrl 的频率
 - `mocap.wrist_mocap`: 是否用 mocap 输出 wrist
 - `mocap.mocap_body_name` 或 `mocap.mocap_id`: 指定 mocap 目标

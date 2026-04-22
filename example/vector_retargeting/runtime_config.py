@@ -13,6 +13,21 @@ VALID_MODES = {"single_left", "single_right", "bimanual"}
 VALID_OPTIMIZERS = {"vector", "position", "dexpilot", "joint", "dex"}
 
 
+def _identity_3x3() -> List[List[float]]:
+    return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+
+def _rotation_matrix_fixed_zyx(rz: float, ry: float, rx: float) -> np.ndarray:
+    """与 mujoco_control 一致：固定轴 R = Rz(rz) @ Ry(ry) @ Rx(rx)。"""
+    cz, sz = np.cos(rz), np.sin(rz)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cx, sx = np.cos(rx), np.sin(rx)
+    rz_m = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    ry_m = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    rx_m = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    return rz_m @ ry_m @ rx_m
+
+
 def _default_camera2table() -> List[List[float]]:
     return [
         [1.0, 0.0, 0.0],
@@ -129,13 +144,16 @@ class MocapConfig:
 @dataclass
 class SimulationConfig:
     mj_xml_path: str
+    # 若提供，则在 Mujoco 启动后立即加载该 keyframe（MJCF 中 <keyframe> 的 name）
+    startup_keyframe: Optional[str] = None
     control_hand: str = "left"
     root_ctrl_indices: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
     finger_ctrl_indices: List[int] = field(
         default_factory=lambda: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
     )
     root_position_offset: List[float] = field(default_factory=lambda: [0.2, 0.0, -0.6])
-    root_rotation_offset_euler_zyx: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # 左手腕旋转标定：R_out = wrist_rotation_calib_matrix @ R_wrist（与 detector 输出的旋转矩阵同约定）
+    wrist_rotation_calib_matrix: List[List[float]] = field(default_factory=_identity_3x3)
     joint_indices: Optional[List[int]] = field(default_factory=lambda: list(range(22)))
     camera_names: List[str] = field(default_factory=list)
     control_rate_hz: float = 60.0
@@ -146,12 +164,18 @@ class SimulationConfig:
             raise ValueError("simulation.control_hand 必须为 left/right")
         if len(self.root_ctrl_indices) != 6:
             raise ValueError("simulation.root_ctrl_indices 必须长度为6")
-        if len(self.finger_ctrl_indices) != 16:
-            raise ValueError("simulation.finger_ctrl_indices 必须长度为16")
+        if len(self.finger_ctrl_indices) < 1:
+            raise ValueError("simulation.finger_ctrl_indices 不能为空")
         if len(self.root_position_offset) != 3:
             raise ValueError("simulation.root_position_offset 必须长度为3")
-        if len(self.root_rotation_offset_euler_zyx) != 3:
-            raise ValueError("simulation.root_rotation_offset_euler_zyx 必须长度为3")
+        mat = np.asarray(self.wrist_rotation_calib_matrix, dtype=np.float64)
+        if mat.shape != (3, 3):
+            raise ValueError("simulation.wrist_rotation_calib_matrix 必须是 3x3")
+        det = float(np.linalg.det(mat))
+        if not np.isfinite(det) or abs(det) < 0.01 or abs(det) > 100.0:
+            raise ValueError(
+                f"simulation.wrist_rotation_calib_matrix 行列式异常: {det}，请检查是否为有效旋转"
+            )
         if self.control_rate_hz <= 0:
             raise ValueError("simulation.control_rate_hz 必须大于0")
 
@@ -188,6 +212,25 @@ def _parse_retargeting(raw: Dict[str, Any]) -> RetargetingConfigRuntime:
     )
 
 
+def _parse_wrist_rotation_calib_matrix(raw: Dict[str, Any]) -> List[List[float]]:
+    """解析 wrist_rotation_calib_matrix；若仅有已弃用的 root_rotation_offset_euler_zyx 则按固定轴 ZYX 合成矩阵。"""
+    if "wrist_rotation_calib_matrix" in raw:
+        mat = np.asarray(raw["wrist_rotation_calib_matrix"], dtype=np.float64)
+        if mat.shape != (3, 3):
+            raise ValueError("simulation.wrist_rotation_calib_matrix 必须是 3x3")
+        return mat.tolist()
+    legacy = raw.get("root_rotation_offset_euler_zyx")
+    if legacy is not None:
+        euler = np.asarray(legacy, dtype=np.float64).reshape(-1)
+        if euler.shape[0] != 3:
+            raise ValueError("simulation.root_rotation_offset_euler_zyx（已弃用）必须长度为3")
+        rz, ry, rx = float(euler[0]), float(euler[1]), float(euler[2])
+        if abs(rz) + abs(ry) + abs(rx) < 1e-12:
+            return _identity_3x3()
+        return _rotation_matrix_fixed_zyx(rz, ry, rx).tolist()
+    return _identity_3x3()
+
+
 def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
     mocap_raw = dict(raw.get("mocap", {}))
     mocap = MocapConfig(
@@ -197,6 +240,11 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
     )
     return SimulationConfig(
         mj_xml_path=str(raw["mj_xml_path"]),
+        startup_keyframe=(
+            str(raw["startup_keyframe"]).strip()
+            if raw.get("startup_keyframe") is not None
+            else None
+        ),
         control_hand=str(raw.get("control_hand", "left")),
         root_ctrl_indices=list(raw.get("root_ctrl_indices", [0, 1, 2, 3, 4, 5])),
         finger_ctrl_indices=list(
@@ -206,9 +254,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
             )
         ),
         root_position_offset=list(raw.get("root_position_offset", [0.2, 0.0, -0.6])),
-        root_rotation_offset_euler_zyx=list(
-            raw.get("root_rotation_offset_euler_zyx", [0.0, 0.0, 0.0])
-        ),
+        wrist_rotation_calib_matrix=_parse_wrist_rotation_calib_matrix(raw),
         joint_indices=raw.get("joint_indices", list(range(22))),
         camera_names=list(raw.get("camera_names", [])),
         control_rate_hz=float(raw.get("control_rate_hz", 60.0)),
