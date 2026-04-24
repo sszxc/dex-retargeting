@@ -18,7 +18,7 @@ def _identity_3x3() -> List[List[float]]:
 
 
 def _rotation_matrix_fixed_zyx(rz: float, ry: float, rx: float) -> np.ndarray:
-    """与 mujoco_control 一致：固定轴 R = Rz(rz) @ Ry(ry) @ Rx(rx)。"""
+    """Same as mujoco_control: fixed-axis R = Rz(rz) @ Ry(ry) @ Rx(rx)."""
     cz, sz = np.cos(rz), np.sin(rz)
     cy, sy = np.cos(ry), np.sin(ry)
     cx, sx = np.cos(rx), np.sin(rx)
@@ -54,11 +54,11 @@ class SensorConfig:
     def validate(self) -> None:
         if self.input_source not in VALID_INPUT_SOURCES:
             raise ValueError(
-                f"sensor.input_source 必须为 {sorted(VALID_INPUT_SOURCES)}"
+                f"sensor.input_source must be one of {sorted(VALID_INPUT_SOURCES)}"
             )
         mat = np.asarray(self.camera2table, dtype=np.float64)
         if mat.shape != (3, 3):
-            raise ValueError("sensor.camera2table 必须是 3x3 矩阵")
+            raise ValueError("sensor.camera2table must be a 3x3 matrix")
 
 
 @dataclass
@@ -96,13 +96,13 @@ class RetargetingConfigRuntime:
 
     def build_hand_config(self, hand: str) -> HandRetargetingConfig:
         if hand not in ("left", "right"):
-            raise ValueError(f"未知 hand: {hand}")
+            raise ValueError(f"Unknown hand: {hand}")
         merged = dict(self.left if hand == "left" else self.right)
 
         if "urdf_path" not in merged:
-            raise ValueError(f"retargeting.{hand}.urdf_path 缺失")
+            raise ValueError(f"retargeting.{hand}.urdf_path is missing")
         if "optimizer" not in merged:
-            raise ValueError(f"retargeting.{hand}.optimizer 缺失")
+            raise ValueError(f"retargeting.{hand}.optimizer is missing")
 
         optimizer = merged.pop("optimizer")
         if isinstance(optimizer, str):
@@ -115,11 +115,11 @@ class RetargetingConfigRuntime:
                 if key not in {"type", "params"}:
                     optimizer_params[key] = value
         else:
-            raise ValueError(f"retargeting.{hand}.optimizer 必须是 string 或 dict")
+            raise ValueError(f"retargeting.{hand}.optimizer must be a string or dict")
 
         if optimizer_type not in VALID_OPTIMIZERS:
             raise ValueError(
-                f"retargeting.{hand}.optimizer.type 必须为 {sorted(VALID_OPTIMIZERS)}"
+                f"retargeting.{hand}.optimizer.type must be one of {sorted(VALID_OPTIMIZERS)}"
             )
         if optimizer_type == "dex":
             optimizer_type = "dexpilot"
@@ -137,7 +137,7 @@ class RetargetingConfigRuntime:
 
     def validate(self) -> None:
         if self.mode not in VALID_MODES:
-            raise ValueError(f"retargeting.mode 必须为 {sorted(VALID_MODES)}")
+            raise ValueError(f"retargeting.mode must be one of {sorted(VALID_MODES)}")
         for hand in self.active_hands():
             self.build_hand_config(hand)
 
@@ -161,17 +161,19 @@ class RandomObjGoalConfig:
     def _validate_ranges(name: str, ranges: List[List[float]]) -> None:
         arr = np.asarray(ranges, dtype=np.float64)
         if arr.shape != (3, 2):
-            raise ValueError(f"{name} 必须为 3x2，格式如 [[xmin,xmax],[ymin,ymax],[zmin,zmax]]")
+            raise ValueError(
+                f"{name} must be 3x2, e.g. [[xmin,xmax],[ymin,ymax],[zmin,zmax]]"
+            )
         if not np.all(np.isfinite(arr)):
-            raise ValueError(f"{name} 包含非有限数值")
+            raise ValueError(f"{name} contains non-finite values")
         if np.any(arr[:, 0] > arr[:, 1]):
-            raise ValueError(f"{name} 中存在 min > max")
+            raise ValueError(f"{name} has min > max for some axis")
 
     def validate(self) -> None:
         if not self.obj_body_name.strip():
-            raise ValueError("simulation.random_obj_goal.obj_body_name 不能为空")
+            raise ValueError("simulation.random_obj_goal.obj_body_name cannot be empty")
         if not self.goal_site_name.strip():
-            raise ValueError("simulation.random_obj_goal.goal_site_name 不能为空")
+            raise ValueError("simulation.random_obj_goal.goal_site_name cannot be empty")
         self._validate_ranges(
             "simulation.random_obj_goal.obj_position_ranges", self.obj_position_ranges
         )
@@ -182,33 +184,35 @@ class RandomObjGoalConfig:
 
 @dataclass
 class AssistNearObjectConfig:
-    """按空格键将 root_position_offset 沿 (obj - 手掌) 方向微调，便于遥操作靠近物体。"""
+    """Space key: nudge root_position_offset along (obj - palm) to help teleop reach the object."""
 
     gain: float = 0.25
     max_step_m: float = 0.12
     palm_body_name: str = "LHand_PALM_LINK"
     obj_body_name: str = "obj"
-    # 目标点 = obj_world_pos + preset_offset_xyz（世界系下的平移偏移，单位 m）
+    # Target point = obj_world_pos + preset_offset_xyz (world-frame translation offset, meters)
     preset_offset_xyz: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
 
     def validate(self) -> None:
         if not np.isfinite(self.gain) or self.gain < 0.0:
-            raise ValueError("simulation.assist_near_object.gain 必须为非负有限数")
+            raise ValueError("simulation.assist_near_object.gain must be a non-negative finite number")
         if not np.isfinite(self.max_step_m) or self.max_step_m <= 0.0:
-            raise ValueError("simulation.assist_near_object.max_step_m 必须为正有限数")
+            raise ValueError("simulation.assist_near_object.max_step_m must be a positive finite number")
         if not str(self.palm_body_name).strip():
-            raise ValueError("simulation.assist_near_object.palm_body_name 不能为空")
+            raise ValueError("simulation.assist_near_object.palm_body_name cannot be empty")
         if not str(self.obj_body_name).strip():
-            raise ValueError("simulation.assist_near_object.obj_body_name 不能为空")
+            raise ValueError("simulation.assist_near_object.obj_body_name cannot be empty")
         off = np.asarray(self.preset_offset_xyz, dtype=np.float64).reshape(-1)
         if off.shape[0] != 3 or not np.all(np.isfinite(off)):
-            raise ValueError("simulation.assist_near_object.preset_offset_xyz 必须是长度3的有限数数组")
+            raise ValueError(
+                "simulation.assist_near_object.preset_offset_xyz must be length-3 finite values"
+            )
 
 
 @dataclass
 class SimulationConfig:
     mj_xml_path: str
-    # 若提供，则在 Mujoco 启动后立即加载该 keyframe（MJCF 中 <keyframe> 的 name）
+    # If set, load this keyframe immediately after MuJoCo starts (<keyframe> name in MJCF)
     startup_keyframe: Optional[str] = None
     control_hand: str = "left"
     root_ctrl_indices: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
@@ -216,7 +220,7 @@ class SimulationConfig:
         default_factory=lambda: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
     )
     root_position_offset: List[float] = field(default_factory=lambda: [0.2, 0.0, -0.6])
-    # 左手腕旋转标定：R_out = wrist_rotation_calib_matrix @ R_wrist（与 detector 输出的旋转矩阵同约定）
+    # Left wrist rotation calibration: R_out = wrist_rotation_calib_matrix @ R_wrist (same convention as detector)
     wrist_rotation_calib_matrix: List[List[float]] = field(default_factory=_identity_3x3)
     joint_indices: Optional[List[int]] = field(default_factory=lambda: list(range(22)))
     camera_names: List[str] = field(default_factory=list)
@@ -227,23 +231,23 @@ class SimulationConfig:
 
     def validate(self) -> None:
         if self.control_hand not in {"left", "right"}:
-            raise ValueError("simulation.control_hand 必须为 left/right")
+            raise ValueError("simulation.control_hand must be left or right")
         if len(self.root_ctrl_indices) != 6:
-            raise ValueError("simulation.root_ctrl_indices 必须长度为6")
+            raise ValueError("simulation.root_ctrl_indices must have length 6")
         if len(self.finger_ctrl_indices) < 1:
-            raise ValueError("simulation.finger_ctrl_indices 不能为空")
+            raise ValueError("simulation.finger_ctrl_indices cannot be empty")
         if len(self.root_position_offset) != 3:
-            raise ValueError("simulation.root_position_offset 必须长度为3")
+            raise ValueError("simulation.root_position_offset must have length 3")
         mat = np.asarray(self.wrist_rotation_calib_matrix, dtype=np.float64)
         if mat.shape != (3, 3):
-            raise ValueError("simulation.wrist_rotation_calib_matrix 必须是 3x3")
+            raise ValueError("simulation.wrist_rotation_calib_matrix must be 3x3")
         det = float(np.linalg.det(mat))
         if not np.isfinite(det) or abs(det) < 0.01 or abs(det) > 100.0:
             raise ValueError(
-                f"simulation.wrist_rotation_calib_matrix 行列式异常: {det}，请检查是否为有效旋转"
+                f"simulation.wrist_rotation_calib_matrix has invalid determinant {det}; expected a proper rotation"
             )
         if self.control_rate_hz <= 0:
-            raise ValueError("simulation.control_rate_hz 必须大于0")
+            raise ValueError("simulation.control_rate_hz must be > 0")
         self.random_obj_goal.validate()
         self.assist_near_object.validate()
 
@@ -281,17 +285,17 @@ def _parse_retargeting(raw: Dict[str, Any]) -> RetargetingConfigRuntime:
 
 
 def _parse_wrist_rotation_calib_matrix(raw: Dict[str, Any]) -> List[List[float]]:
-    """解析 wrist_rotation_calib_matrix；若仅有已弃用的 root_rotation_offset_euler_zyx 则按固定轴 ZYX 合成矩阵。"""
+    """Parse wrist_rotation_calib_matrix; if only deprecated root_rotation_offset_euler_zyx is set, build ZYX matrix."""
     if "wrist_rotation_calib_matrix" in raw:
         mat = np.asarray(raw["wrist_rotation_calib_matrix"], dtype=np.float64)
         if mat.shape != (3, 3):
-            raise ValueError("simulation.wrist_rotation_calib_matrix 必须是 3x3")
+            raise ValueError("simulation.wrist_rotation_calib_matrix must be 3x3")
         return mat.tolist()
     legacy = raw.get("root_rotation_offset_euler_zyx")
     if legacy is not None:
         euler = np.asarray(legacy, dtype=np.float64).reshape(-1)
         if euler.shape[0] != 3:
-            raise ValueError("simulation.root_rotation_offset_euler_zyx（已弃用）必须长度为3")
+            raise ValueError("simulation.root_rotation_offset_euler_zyx (deprecated) must have length 3")
         rz, ry, rx = float(euler[0]), float(euler[1]), float(euler[2])
         if abs(rz) + abs(ry) + abs(rx) < 1e-12:
             return _identity_3x3()
@@ -359,12 +363,12 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         raw = yaml.load(f, Loader=yaml.FullLoader)
 
     if not isinstance(raw, dict):
-        raise ValueError("配置文件必须是字典结构")
+        raise ValueError("Config file must parse to a dict")
 
     sensor = _parse_sensor(dict(raw.get("sensor", {})))
     retargeting = _parse_retargeting(dict(raw.get("retargeting", {})))
     if "simulation" not in raw:
-        raise ValueError("配置缺少 simulation 字段")
+        raise ValueError("Config is missing 'simulation' section")
     simulation = _parse_simulation(dict(raw["simulation"]))
     cfg = RuntimeConfig(sensor=sensor, retargeting=retargeting, simulation=simulation)
     cfg.validate()

@@ -123,7 +123,7 @@ class RetargetingConfig:
                     "\033[00m",
                 )
         elif self.type == "joint":
-            # Joint: 仅需 target_joint_names（可为空，表示使用机器人全部关节）；target_link_human_indices 可选
+            # Joint: only target_joint_names required (empty = all robot joints); target_link_human_indices optional
             pass
 
         # URDF path check

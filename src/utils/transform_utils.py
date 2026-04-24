@@ -81,7 +81,7 @@ class Transform(object):
     @classmethod
     def from_matrix(cls, m):
         """Initialize from a 4x4 matrix."""
-        # TODO 是否有办法进行检查 m 是否是合理的旋转矩阵
+        # TODO: validate that m[:3,:3] is a proper rotation matrix
         rotation = Rotation.from_matrix(m[:3, :3])
         translation = m[:3, 3]
         return cls(rotation, translation)
@@ -180,12 +180,12 @@ def generate_interpolation(l1, l2, num_points):
     l1, l2: ur_robot.getl() format
     """
     robotl_list = []
-    for i in range(num_points + 2):  # +2 是为了包含左右端点
-        t = i / (num_points + 1)  # 插值系数从0到1
+    for i in range(num_points + 2):  # +2 to include both endpoints
+        t = i / (num_points + 1)  # interpolation parameter in [0, 1]
         x = l1[0] + t * (l2[0] - l1[0])
         y = l1[1] + t * (l2[1] - l1[1])
         z = l1[2] + t * (l2[2] - l1[2])
-        # 其他姿态角度保持不变
+        # Keep orientation angles fixed
         robotl = [x, y, z, l1[3], l1[4], l1[5]]
         robotl_list.append(robotl)
     return robotl_list

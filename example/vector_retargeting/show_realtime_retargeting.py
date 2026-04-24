@@ -118,10 +118,10 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
     ).astype(int)
 
     last_render_time = time.time()
-    render_interval = 1.0 / 30.0  # 限制渲染频率到30fps
-    
+    render_interval = 1.0 / 30.0  # Cap render rate at ~30 fps
+
     while True:
-        # 清空队列中所有旧帧，只保留最新的
+        # Drain stale frames; keep only the latest
         bgr = None
         while True:
             try:
@@ -130,9 +130,9 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
                 break
         
         if bgr is None:
-            # 如果队列为空，等待一小段时间再继续
+            # Queue empty: brief sleep before retry
             time.sleep(0.01)
-            # 即使没有新帧，也要定期渲染以保持界面响应
+            # Still render periodically so the UI stays responsive
             current_time = time.time()
             if current_time - last_render_time >= render_interval:
                 viewer.render()
@@ -162,7 +162,7 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
             qpos = retargeting.retarget(ref_value)
             robot.set_qpos(qpos[retargeting_to_sapien])
 
-        # 限制渲染频率，避免渲染成为瓶颈
+        # Throttle rendering so it does not bottleneck the loop
         current_time = time.time()
         if current_time - last_render_time >= render_interval:
             viewer.render()
@@ -180,11 +180,11 @@ def produce_frame(queue: multiprocessing.Queue, camera_path: Optional[str] = Non
         if not success:
             time.sleep(1 / 30.0)
             continue
-        # 使用非阻塞put，如果队列满了就直接丢弃这一帧（消费者会处理队列中的帧）
+        # Non-blocking put: drop frame if queue is full (consumer keeps latest)
         try:
             queue.put_nowait(image)
         except:
-            pass  # 队列满了，跳过这一帧，保持实时性
+            pass  # Queue full; skip this frame for lower latency
         time.sleep(1 / 30.0)
 
 
@@ -210,7 +210,7 @@ def main(
         Path(__file__).absolute().parent.parent.parent / "assets" / "robots" / "hands"
     )
 
-    queue = multiprocessing.Queue(maxsize=2)  # 减小队列大小，只保留最新2帧
+    queue = multiprocessing.Queue(maxsize=2)  # Small queue: keep at most 2 frames
     producer_process = multiprocessing.Process(
         target=produce_frame, args=(queue, camera_path)
     )

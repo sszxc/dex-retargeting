@@ -11,7 +11,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         data = yaml.load(f, Loader=yaml.FullLoader)
     if not isinstance(data, dict):
-        raise ValueError(f"{path} 不是 dict yaml")
+        raise ValueError(f"{path} is not a dict YAML root")
     return data
 
 
@@ -37,7 +37,7 @@ def _infer_hand_mode(stem: str) -> str:
 
 def _normalize_optimizer_type(t: Any) -> str:
     if t is None:
-        raise ValueError("retargeting.type 缺失")
+        raise ValueError("retargeting.type is missing")
     s = str(t).strip().lower()
     if s == "dex":
         return "dexpilot"
@@ -53,16 +53,16 @@ def convert_one(
     camera2table: list,
 ) -> Dict[str, Any]:
     if "retargeting" not in old_cfg or not isinstance(old_cfg["retargeting"], dict):
-        raise ValueError("旧配置缺少 retargeting 字段")
+        raise ValueError("Legacy config missing retargeting section")
     r = dict(old_cfg["retargeting"])
 
     opt_type = _normalize_optimizer_type(r.pop("type", None))
     urdf_path = r.pop("urdf_path", None)
     if urdf_path is None:
-        raise ValueError("旧配置 retargeting.urdf_path 缺失")
+        raise ValueError("Legacy config missing retargeting.urdf_path")
     add_dummy_free_joint = bool(r.pop("add_dummy_free_joint", False))
 
-    # 其余字段作为 optimizer params（保持原样）
+    # Remaining keys become optimizer params (unchanged)
     optimizer_params = r
 
     left_cfg: Dict[str, Any] = {
@@ -83,7 +83,7 @@ def convert_one(
             "rerun_enabled": False,
         },
         "retargeting": {
-            "mode": "single_left",  # 由外层用文件名覆盖
+            "mode": "single_left",  # Overridden from filename by caller
             "left": left_cfg,
             "right": right_cfg,
         },
@@ -130,13 +130,13 @@ def main() -> None:
         "--input-dir",
         type=str,
         default="src/dex_retargeting/configs/my",
-        help="旧配置目录（只处理 *.yml）",
+        help="Legacy config directory (*.yml only)",
     )
     ap.add_argument(
         "--output-suffix",
         type=str,
         default="_runtime.yml",
-        help="输出文件后缀（默认 *_runtime.yml）",
+        help="Output filename suffix (default *_runtime.yml)",
     )
     ap.add_argument(
         "--input-source",
@@ -164,7 +164,7 @@ def main() -> None:
 
     ymls = sorted(in_dir.glob("*.yml"))
     if not ymls:
-        print(f"未找到 yml: {in_dir}")
+        print(f"No .yml files in: {in_dir}")
         return
 
     count = 0

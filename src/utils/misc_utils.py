@@ -6,21 +6,19 @@ np.set_printoptions(precision=5, suppress=True)
 
 class DummyClass:
     def __getattr__(self, name):
-        # 返回另一个 DummyClass 实例，从而支持链式调用
+        # Return another DummyClass for chained attribute access
         return (
             DummyClass()
-        )  # lambda *args, **kwargs: None  # 返回一个直接 pass 的空函数
+        )  # lambda *args, **kwargs: None  # no-op callable placeholder
 
     def __call__(self, *args, **kwargs):
-        # 允许 DummyClass 实例被调用（如 canvas.ax.scatter()），直接 pass
+        # Callable no-op (e.g. canvas.ax.scatter())
         return None
 
     def __enter__(self):
-        # 用于进入 with 语句
         return self
 
     def __exit__(self, *args):
-        # 用于退出 with 语句
         pass
 
 

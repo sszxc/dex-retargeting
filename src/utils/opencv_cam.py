@@ -3,7 +3,7 @@ from typing import Optional
 
 
 def get_camera_info(camera_id):
-    """获取相机的详细信息"""
+    """Return detailed info for a camera index."""
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
         return None
@@ -26,19 +26,17 @@ def find_camera_with_resolution(
     default_camera_id: int = 0,
 ) -> Optional[int]:
     """
-    查找支持指定分辨率的相机并返回其 ID。
-    
-    该函数会遍历可用的相机，尝试设置目标分辨率，并验证是否成功。
-    如果找到支持该分辨率的相机，返回第一个匹配的相机 ID。
-    
+    Find a camera that reports the requested resolution and return its ID.
+
+    Scans camera indices, checks reported width/height, and returns the first match.
+
     Args:
-        target_width: 目标宽度，默认为 1280
-        target_height: 目标高度，默认为 720
-        max_cameras: 最大检测相机数量，默认为 10
-    
+        target_width: Desired width (default 1280).
+        target_height: Desired height (default 720).
+        max_cameras: Max camera indices to probe (default 10).
+
     Returns:
-        如果找到支持该分辨率的相机，返回相机 ID (int)
-        如果未找到，返回 default_camera_id
+        Camera ID (int) if a match is found; otherwise default_camera_id.
     """
     for i in range(max_cameras):
         info = get_camera_info(i)

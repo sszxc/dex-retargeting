@@ -85,10 +85,10 @@ def _make_rerun_board(enabled: bool):
             f"DexRetargeting_{time.strftime('%m_%d_%H_%M', time.localtime())}",
             template="dex_retargeting",
         )
-        logger.info("RerunBoard 已启用")
+        logger.info("RerunBoard enabled")
         return board, rr
     except Exception as err:
-        logger.warning(f"RerunBoard 启用失败（将继续运行）：{err}")
+        logger.warning(f"RerunBoard failed to start (continuing without it): {err}")
         return (DummyClass() if DummyClass is not None else None), None
 
 
@@ -110,10 +110,10 @@ def _resolve_xml_path(mj_xml_path: str | Path) -> Path:
     if p.is_dir():
         first_xml = next(p.glob("*.xml"), None)
         if first_xml is None:
-            raise FileNotFoundError(f"目录下未找到 .xml 文件: {p}")
+            raise FileNotFoundError(f"No .xml file found in directory: {p}")
         return first_xml
     if not p.exists():
-        raise FileNotFoundError(f"Mujoco 场景文件不存在: {p}")
+        raise FileNotFoundError(f"MuJoCo scene file does not exist: {p}")
     return p
 
 
@@ -131,12 +131,12 @@ def _setup_recording_cameras(
             names_to_use = [n for n in camera_names if n in xml_camera_names]
             if len(names_to_use) < len(camera_names):
                 unknown = [n for n in camera_names if n not in xml_camera_names]
-                logger.warning(f"以下相机名在 XML 中不存在，已忽略: {unknown}")
+                logger.warning(f"Camera name(s) not found in XML, ignored: {unknown}")
         specs = [(name, name) for name in names_to_use]
         return specs, list(names_to_use)
 
     default_camera = _make_dynamic_camera(DEFAULT_CAMERA_PARAMS)
-    logger.info("场景 XML 中未定义相机，使用内置默认相机 default")
+    logger.info("No cameras in scene XML; using built-in default camera 'default'")
     return [("default", default_camera)], ["default"]
 
 
@@ -155,14 +155,14 @@ def _sample_xyz(ranges: list[list[float]]) -> np.ndarray:
 def _apply_assist_root_offset_from_palm_obj(
     model: mujoco.MjModel, data: mujoco.MjData, sim: SimulationConfig
 ) -> tuple[bool, str]:
-    """根据仿真中 palm→obj 的相对位移，沿该方向增加 root_position_offset（拉近 mocap/root 目标）。"""
+    """Nudge root_position_offset along palm→obj in simulation (pull mocap/root target toward the object)."""
     cfg = sim.assist_near_object
     palm_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.palm_body_name)
     obj_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.obj_body_name)
     if palm_id < 0:
-        return False, f"assist: 未找到 palm body '{cfg.palm_body_name}'"
+        return False, f"assist: palm body not found '{cfg.palm_body_name}'"
     if obj_id < 0:
-        return False, f"assist: 未找到 obj body '{cfg.obj_body_name}'"
+        return False, f"assist: obj body not found '{cfg.obj_body_name}'"
     palm = np.asarray(data.xpos[palm_id], dtype=np.float64).reshape(3)
     objp = np.asarray(data.xpos[obj_id], dtype=np.float64).reshape(3)
     preset = np.asarray(cfg.preset_offset_xyz, dtype=np.float64).reshape(3)
@@ -195,7 +195,7 @@ def _randomize_obj_goal_pose(
 
     obj_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.obj_body_name)
     if obj_body_id < 0:
-        logger.warning(f"随机场景失败：未找到 body '{cfg.obj_body_name}'")
+        logger.warning(f"Randomize scene failed: body not found '{cfg.obj_body_name}'")
     else:
         body_joint_num = int(model.body_jntnum[obj_body_id])
         body_joint_adr = int(model.body_jntadr[obj_body_id])
@@ -210,7 +210,7 @@ def _randomize_obj_goal_pose(
                 updated = True
             else:
                 logger.warning(
-                    f"body '{cfg.obj_body_name}' 存在非 free joint，改为写入 model.body_pos"
+                    f"body '{cfg.obj_body_name}' is not a free joint; writing model.body_pos instead"
                 )
                 model.body_pos[obj_body_id] = obj_pos
                 updated = True
@@ -220,7 +220,7 @@ def _randomize_obj_goal_pose(
 
     goal_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, cfg.goal_site_name)
     if goal_site_id < 0:
-        logger.warning(f"随机场景失败：未找到 site '{cfg.goal_site_name}'")
+        logger.warning(f"Randomize scene failed: site not found '{cfg.goal_site_name}'")
     else:
         model.site_pos[goal_site_id] = goal_pos
         updated = True
@@ -228,7 +228,7 @@ def _randomize_obj_goal_pose(
     if updated:
         mujoco.mj_forward(model, data)
         logger.info(
-            "已随机重置 obj/goal："
+            "Randomized obj/goal: "
             f"{cfg.obj_body_name}={obj_pos.round(4).tolist()}, "
             f"{cfg.goal_site_name}={goal_pos.round(4).tolist()}"
         )
@@ -243,7 +243,7 @@ def main(
 ):
     runtime_cfg: RuntimeConfig = load_runtime_config(runtime_config_path)
     logger.info(
-        f"加载配置成功: input_source={runtime_cfg.sensor.input_source}, mode={runtime_cfg.retargeting.mode}"
+        f"Loaded config: input_source={runtime_cfg.sensor.input_source}, mode={runtime_cfg.retargeting.mode}"
     )
     board, rr = _make_rerun_board(runtime_cfg.sensor.rerun_enabled)
     hand_connections = _hand_connections_21()
@@ -257,29 +257,29 @@ def main(
     model = mujoco.MjModel.from_xml_path(str(mj_xml_path))
     data = mujoco.MjData(model)
 
-    # 可选：启动后立即加载指定 keyframe（MJCF <keyframe name="...">）
+    # Optional: load a named keyframe right after startup (MJCF <keyframe name="...">)
     if runtime_cfg.simulation.startup_keyframe:
         kf_name = runtime_cfg.simulation.startup_keyframe
         kf_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, kf_name)
         if kf_id < 0:
             logger.warning(
-                f"startup_keyframe='{kf_name}' 未在模型中找到（请检查 XML 里的 <keyframe> name），将忽略。"
+                f"startup_keyframe='{kf_name}' not found in model (check <keyframe> name in XML); ignoring."
             )
         else:
             mujoco.mj_resetDataKeyframe(model, data, kf_id)
             mujoco.mj_forward(model, data)
-            logger.info(f"已加载 startup_keyframe='{kf_name}' (id={kf_id})")
+            logger.info(f"Loaded startup_keyframe='{kf_name}' (id={kf_id})")
 
     _randomize_obj_goal_pose(model, data, runtime_cfg)
 
     controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
-    # 仅在 wrist_mocap 模式下用于录制 action 的 mocap id（不影响控制逻辑）
+    # Mocap id for recording action in wrist_mocap mode only (does not affect control)
     mocap_id_for_action: Optional[int] = None
     if runtime_cfg.simulation.mocap.wrist_mocap:
         try:
             mocap_id_for_action = controller._resolve_mocap_id()  # type: ignore[attr-defined]
         except Exception as err:
-            logger.warning(f"解析 mocap_id 失败（action 将不包含 mocap 位姿）：{err}")
+            logger.warning(f"Failed to parse mocap_id (action will omit mocap pose): {err}")
 
     recording_camera_specs, recording_camera_names = _setup_recording_cameras(
         model, runtime_cfg.simulation.camera_names
@@ -302,14 +302,14 @@ def main(
                 robots_for_vis[hand] = robot
                 joint_connections_for_vis[hand] = robot.get_joint_connections()
         except Exception as err:
-            logger.warning(f"初始化 robot 可视化失败（将跳过 joint 3D 可视化）：{err}")
+            logger.warning(f"Robot visualization init failed (skipping joint 3D viz): {err}")
 
     worker = multiprocessing.Process(
         target=run_retarget_worker,
         args=(qpos_queue, runtime_cfg, str(robot_dir)),
     )
     worker.start()
-    logger.info("检测与重定向子进程已启动")
+    logger.info("Detection/retargeting worker process started")
 
     keyboard_lock = threading.Lock()
     should_exit = False
@@ -341,7 +341,7 @@ def main(
 
     def save_episode(buffers: dict[str, list], idx: int) -> None:
         if not buffers["/action"]:
-            logger.warning(f"Episode {idx} 没有任何 step，跳过保存。")
+            logger.warning(f"Episode {idx} has no steps; skipping save.")
             return
 
         qpos_array = np.stack(buffers["/observations/qpos"], axis=0)
@@ -380,7 +380,7 @@ def main(
             obs.create_dataset("qpos", data=qpos_array)
             obs.create_dataset("qvel", data=qvel_array)
             root.create_dataset("action", data=action_array)
-        logger.info(f"Episode {idx} 已保存到 {dataset_path}, steps={max_timesteps}")
+        logger.info(f"Episode {idx} saved to {dataset_path}, steps={max_timesteps}")
 
     def on_press(key):
         nonlocal record_start_requested, record_stop_requested, randomize_requested, should_exit, assist_near_object_pending
@@ -405,8 +405,8 @@ def main(
     keyboard_listener = keyboard.Listener(on_press=on_press)
     keyboard_listener.start()
     logger.info(
-        f"键盘监听已启动：按 '{start_key}' 开始记录，按 '{stop_key}' 结束保存，按 'r' 随机重置 obj/goal，"
-        f"按 Space 在检测到手时沿 palm→obj 微调 root_position_offset，按 'q' 退出"
+        f"Keyboard listener started: '{start_key}' start recording, '{stop_key}' stop and save, "
+        f"'r' randomize obj/goal, Space (when hand detected) nudge root_position_offset along palm→obj, 'q' quit"
     )
 
     latest_msg = None
@@ -415,7 +415,7 @@ def main(
 
     viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
     try:
-        logger.info("Mujoco viewer 已启动")
+        logger.info("MuJoCo viewer started")
         options = viewer.opt
         mujoco.mjv_defaultOption(options)
         options.flags[mujoco.mjtVisFlag.mjVIS_CAMERA] = True
@@ -524,7 +524,7 @@ def main(
                                                 ),
                                             )
                     except Exception as err:
-                        logger.debug(f"Rerun log 失败（已忽略）：{err}")
+                        logger.debug(f"Rerun log failed (ignored): {err}")
 
                 if is_recording and episode_buffers is not None:
                     joint_indices = runtime_cfg.simulation.joint_indices
@@ -554,7 +554,7 @@ def main(
                                 img = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
                             episode_buffers[f"/observations/images/{cam_name}"].append(img)
                         except Exception as err:
-                            logger.warning(f"渲染相机 {cam_name} 失败: {err}")
+                            logger.warning(f"Render camera {cam_name} failed: {err}")
                 last_control_time = now
 
             while data.time < now - sim_start:
@@ -568,7 +568,7 @@ def main(
                     episode_buffers = init_episode_buffers()
                     is_recording = True
                     record_start_requested = False
-                    logger.info(f"开始记录 episode_{episode_idx}")
+                    logger.info(f"Started recording episode_{episode_idx}")
                 if record_stop_requested:
                     if episode_buffers is not None:
                         pending_buffers = episode_buffers
@@ -588,9 +588,9 @@ def main(
 
             viewer.sync()
     except KeyboardInterrupt:
-        logger.info("收到 Ctrl-C，准备退出并清理资源")
+        logger.info("Ctrl-C received; shutting down and cleaning up")
     finally:
-        # 保证无论如何退出，都能正确清理
+        # Ensure cleanup on any exit path
         try:
             keyboard_listener.stop()
             keyboard_listener.join()
@@ -609,7 +609,7 @@ def main(
         except Exception:
             pass
 
-        # 某些环境下 Ctrl-C 会导致 GLFW 清理顺序异常，额外 terminate 一次可避免警告反复出现
+        # Extra glfw.terminate() avoids repeated GLFW cleanup warnings after Ctrl-C on some setups
         try:
             import glfw  # type: ignore
 
@@ -617,7 +617,7 @@ def main(
         except Exception:
             pass
 
-        logger.info("已退出")
+        logger.info("Exited")
 
 
 if __name__ == "__main__":

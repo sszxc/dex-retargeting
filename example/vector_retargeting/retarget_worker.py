@@ -112,11 +112,11 @@ def run_retarget_worker(
             hand_cfg.to_retargeting_dict()
         ).build()
         logger.info(
-            f"初始化 retargeting hand={hand}, optimizer={hand_cfg.optimizer_type}, urdf={hand_cfg.urdf_path}"
+            f"Initialized retargeting hand={hand}, optimizer={hand_cfg.optimizer_type}, urdf={hand_cfg.urdf_path}"
         )
 
     if runtime_cfg.sensor.input_source == "test_sine":
-        logger.info("输入源: test_sine")
+        logger.info("Input source: test_sine")
         total_dim = 22
         dim_duration = 3.0
         dim_idx = 0
@@ -139,7 +139,7 @@ def run_retarget_worker(
 
     source = _build_source(runtime_cfg, active_hands)
     if source is None:
-        raise ValueError(f"不支持的输入源: {runtime_cfg.sensor.input_source}")
+        raise ValueError(f"Unsupported input source: {runtime_cfg.sensor.input_source}")
 
     try:
         while True:

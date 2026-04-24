@@ -22,7 +22,7 @@ class HandObservation:
 
 def _normalize_hand_name(hand: str) -> str:
     if hand.lower() not in {"left", "right"}:
-        raise ValueError(f"不支持的手类型: {hand}")
+        raise ValueError(f"Unsupported hand: {hand}")
     return hand.lower()
 
 
@@ -41,12 +41,12 @@ class WebcamInputSource:
         self.camera2table = np.asarray(camera2table, dtype=np.float64)
         self.cap = cv2.VideoCapture(webcam_index)
         if not self.cap.isOpened():
-            raise RuntimeError(f"无法打开 webcam index={webcam_index}")
+            raise RuntimeError(f"Cannot open webcam index={webcam_index}")
         self.detectors = {
             hand: SingleHandDetector(hand_type=_to_detector_hand(hand), selfie=False)
             for hand in self.active_hands
         }
-        logger.info(f"输入源: webcam(index={webcam_index}), hands={self.active_hands}")
+        logger.info(f"Input source: webcam(index={webcam_index}), hands={self.active_hands}")
 
     def poll(self) -> Dict[str, HandObservation]:
         ok, bgr = self.cap.read()
@@ -91,7 +91,7 @@ class LeapInputSource:
             )
             for hand in self.active_hands
         }
-        logger.info(f"输入源: leap_motion, hands={self.active_hands}")
+        logger.info(f"Input source: leap_motion, hands={self.active_hands}")
 
     def poll(self) -> Dict[str, HandObservation]:
         out: Dict[str, HandObservation] = {}

@@ -37,7 +37,7 @@ class RetargetingType(enum.Enum):
         enum.auto()
     )  # For offline data processing, especially hand-object interaction data
     dexpilot = enum.auto()  # For teleoperation, with finger closing prior
-    joint = enum.auto()  # 从 joint_pos 直接计算关节角，不做优化
+    joint = enum.auto()  # Compute joint angles from joint_pos directly, no optimization
 
 
 class HandType(enum.Enum):

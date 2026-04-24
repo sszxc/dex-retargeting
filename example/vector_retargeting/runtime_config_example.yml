@@ -45,11 +45,11 @@ simulation:
     wrist_mocap: false
     mocap_body_name: null
     mocap_id: null
-  # Space 键：在检测到手时沿 (obj - palm) 微调 root_position_offset（见 my_retargeting_mujoco）
+  # Space: when a hand is detected, nudge root_position_offset along (obj - palm); see my_retargeting_mujoco
   assist_near_object:
     gain: 0.25
     max_step_m: 0.12
     palm_body_name: LHand_PALM_LINK
     obj_body_name: obj
-    # 你希望 palm 追踪的目标点：obj_world_pos + preset_offset_xyz
+    # Palm tracking target: obj_world_pos + preset_offset_xyz
     preset_offset_xyz: [0.0, 0.0, 0.0]

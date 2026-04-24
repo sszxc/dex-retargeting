@@ -23,7 +23,7 @@ class RerunBoard:
         # assert name is not None, "name is required"
         rr.init(name, recording_id=uuid4(), spawn=True)
         # name example: f"CablePlug_{time.strftime('%m_%d_%H_%M', time.localtime())}"
-        # use uuid4() to generate a unique recording_id 否则在同一个 process 中会重复
+        # uuid4() avoids duplicate recording_id in the same process
 
         if template == "3D":
             self.get_3D_view_board()
@@ -43,7 +43,7 @@ class RerunBoard:
 
     def __getattr__(self, name):
         if hasattr(rr, name):
-            return getattr(rr, name)  # 转发到 rerun 的方法
+            return getattr(rr, name)  # delegate to rerun
         else:
             raise AttributeError(f"'{name}' not found in rerun module.")
 
@@ -77,7 +77,7 @@ class RerunBoard:
                     )
                 ],
             ),
-            # collapse_panels=True,  # 最小化所有边栏
+            # collapse_panels=True,  # minimize side panels
         )
         rr.send_blueprint(blueprint)
 
@@ -229,7 +229,7 @@ class RerunBoard:
         assert len(translation) == 3, "pose_t should be a 3D vector"
         assert rotation.shape == (3, 3), "pose_R should be a 3x3 matrix"
 
-        axis_x = rotation.dot([axis_size, 0, 0])  # 取第一列
+        axis_x = rotation.dot([axis_size, 0, 0])  # first column of R
         axis_y = rotation.dot([0, axis_size, 0])
         axis_z = rotation.dot([0, 0, axis_size])
 
@@ -272,41 +272,27 @@ class RerunBoard:
         """
 
         def _load_file(path: Path) -> trimesh.Scene:
-            """加载场景文件并返回一个 trimesh.Scene 对象
-            典型格式 .jlb, .pbj
-            所有支持格式 ↓
-            > print(trimesh.available_formats())
-            ['dict', 'dict64', 'json', 'msgpack', 'stl', 'stl_ascii', 'ply', 'obj', 'off', 'glb', 'gltf', 'xyz', 'zip', 'tar.bz2', 'tar.gz']
-            """
-            # print(f"loading scene {path}…")
+            """Load a scene file into a ``trimesh.Scene`` (glb, gltf, obj, stl, …)."""
             mesh = trimesh.load(path, force="scene")
-            # 返回对象 mesh.graph.nodes: dict_keys(['world', 'Box.obj'])
             return cast(trimesh.Scene, mesh)
 
         def _log_scene(
             scene: trimesh.Scene, node: str, path: str | None = None
         ) -> None:
-            """递归地记录场景中的每个节点及其变换矩阵"""
+            """Recursively log each scene node and its transform."""
             if node is None:
-                breakpoint()  # 存在情况: node 名为 None
+                breakpoint()  # debug: node name can be None
                 return
             path = path + "/" + node if path else node
 
-            parent = scene.graph.transforms.parents.get(
-                node
-            )  # 获取 node 的父节点 (parents 是一个 dict，key 是任一 node，value 是 parent)
-            children = scene.graph.transforms.children.get(
-                node
-            )  # 获取 node 的子节点 List
+            parent = scene.graph.transforms.parents.get(node)
+            children = scene.graph.transforms.children.get(node)
 
-            node_data = scene.graph.get(
-                frame_to=node, frame_from=parent
-            )  # 获取指定父子之间相对位置
+            node_data = scene.graph.get(frame_to=node, frame_from=parent)
             if node_data:
-                # Log the transform between this node and its direct parent (if it has one!).
                 if parent:
                     world_from_mesh = node_data[0]
-                    rr.log(  # 会影响后面的位置 (这个坐标轴并不会可视化出来，多次 log 好像可以连续改变位置)
+                    rr.log(
                         path,  # 'world/Labtern' 'world/Lantern/LanternPole_Lantern'
                         rr.Transform3D(
                             translation=trimesh.transformations.translation_from_matrix(
@@ -318,7 +304,6 @@ class RerunBoard:
 
                 # Log this node's mesh, if it has one.
                 mesh = cast(trimesh.Trimesh, scene.geometry.get(node_data[1]))
-                # scene.geometry 是一个 dict，对应存储的多个 mesh（包括 vertics/faces）
                 if mesh is not None:
                     vertex_colors = None
                     vertex_texcoords = None
@@ -353,15 +338,15 @@ class RerunBoard:
                     rr.log(
                         path,
                         rr.Mesh3D(
-                            vertex_positions=mesh.vertices,  # 顶点位置
-                            vertex_colors=vertex_colors,  # 顶点颜色
-                            vertex_normals=mesh.vertex_normals,  # 顶点法线 type: ignore[arg-type]
-                            vertex_texcoords=vertex_texcoords,  # 顶点纹理坐标
-                            albedo_texture=albedo_texture,  # 漫反射贴图
-                            triangle_indices=mesh.faces,  # 三角形索引
-                            albedo_factor=albedo_factor,  # 漫反射因子
+                            vertex_positions=mesh.vertices,
+                            vertex_colors=vertex_colors,
+                            vertex_normals=mesh.vertex_normals,  # type: ignore[arg-type]
+                            vertex_texcoords=vertex_texcoords,
+                            albedo_texture=albedo_texture,
+                            triangle_indices=mesh.faces,
+                            albedo_factor=albedo_factor,
                         ),
-                    )  # Transform3D 和 Mesh3D 一组，对应一个实体
+                    )
 
             if children:
                 for child in children:
@@ -373,7 +358,7 @@ class RerunBoard:
         else:
             scene = file_path
         obj_root = next(iter(scene.graph.nodes))
-        # 应用变换矩阵
+        # Apply root transform
         if transform is None:
             transform = np.identity(4)  # default identity matrix
         rr.log(
@@ -389,7 +374,7 @@ class RerunBoard:
 if __name__ == "__main__":
     board = RerunBoard(f"RerunTest_{time.strftime('%m_%d_%H_%M', time.localtime())}")
 
-    # board.set_surveillance_camera() # camera id, 重启后id会变
+    # board.set_surveillance_camera()  # device id may change after reboot
 
     for t in range(0, 50):
         board.step()
@@ -412,8 +397,7 @@ if __name__ == "__main__":
         board.log("torque/y", rr.Scalars(fy))
         board.log("torque/z", rr.Scalars(fz))
 
-        # 3D
-        point_3d = np.random.uniform(-1, 1, 3)  # 生成一个随机的 3D 点
+        point_3d = np.random.uniform(-1, 1, 3)
         point_3d = point_3d / np.linalg.norm(point_3d)
         board.log(
             "3d_points/pos",

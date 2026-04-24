@@ -60,10 +60,10 @@ class MujocoHandController:
             self.model, mujoco.mjtObj.mjOBJ_BODY, body_name
         )
         if body_id < 0:
-            raise ValueError(f"未找到 mocap body: {body_name}")
+            raise ValueError(f"mocap body not found: {body_name}")
         mocap_id = int(self.model.body_mocapid[body_id])
         if mocap_id < 0:
-            raise ValueError(f"body {body_name} 不是 mocap body")
+            raise ValueError(f"body {body_name} is not a mocap body")
         self._resolved_mocap_id = mocap_id
         return mocap_id
 
@@ -80,7 +80,7 @@ class MujocoHandController:
         need = 6 + n_finger
         if q.shape[0] < need:
             logger.warning(
-                f"hand qpos 长度不足: 需要 {need}（dummy 6 + 手指 {n_finger}），实际 {q.shape[0]}，跳过本帧控制"
+                f"hand qpos too short: need {need} (dummy 6 + fingers {n_finger}), got {q.shape[0]}; skipping frame"
             )
             return
         finger_values = q[6:need]
@@ -91,7 +91,7 @@ class MujocoHandController:
         if self.simulation.mocap.wrist_mocap:
             mocap_id = self._resolve_mocap_id()
             if mocap_id is None:
-                logger.warning("wrist_mocap=True 但未解析到 mocap id，跳过 wrist 输出")
+                logger.warning("wrist_mocap=True but mocap id unresolved; skipping wrist output")
                 return
             pos_off = np.asarray(self.simulation.root_position_offset, dtype=np.float64)
             r_cal = np.asarray(
@@ -116,7 +116,7 @@ class MujocoHandController:
                 data.ctrl[int(ctrl_idx)] = root[local_i]
             return
 
-        # 兜底：若 q 不包含 root，但有 wrist quaternion，则用其驱动 root 旋转
+        # Fallback: if q has no root but wrist quaternion exists, drive root rotation from it
         if wrist_quat is not None:
             r_cal = np.asarray(
                 self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
