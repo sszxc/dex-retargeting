@@ -18,7 +18,7 @@ from pynput import keyboard
 
 from mujoco_control import MujocoHandController
 from retarget_worker import run_retarget_worker
-from runtime_config import RuntimeConfig, load_runtime_config
+from runtime_config import RuntimeConfig, SimulationConfig, load_runtime_config
 
 
 DEFAULT_LOOKAT = [0.0, 0.0, 0.2]
@@ -140,6 +140,101 @@ def _setup_recording_cameras(
     return [("default", default_camera)], ["default"]
 
 
+def _sample_xyz(ranges: list[list[float]]) -> np.ndarray:
+    arr = np.asarray(ranges, dtype=np.float64)
+    return np.array(
+        [
+            np.random.uniform(arr[0, 0], arr[0, 1]),
+            np.random.uniform(arr[1, 0], arr[1, 1]),
+            np.random.uniform(arr[2, 0], arr[2, 1]),
+        ],
+        dtype=np.float64,
+    )
+
+
+def _apply_assist_root_offset_from_palm_obj(
+    model: mujoco.MjModel, data: mujoco.MjData, sim: SimulationConfig
+) -> tuple[bool, str]:
+    """根据仿真中 palm→obj 的相对位移，沿该方向增加 root_position_offset（拉近 mocap/root 目标）。"""
+    cfg = sim.assist_near_object
+    palm_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.palm_body_name)
+    obj_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.obj_body_name)
+    if palm_id < 0:
+        return False, f"assist: 未找到 palm body '{cfg.palm_body_name}'"
+    if obj_id < 0:
+        return False, f"assist: 未找到 obj body '{cfg.obj_body_name}'"
+    palm = np.asarray(data.xpos[palm_id], dtype=np.float64).reshape(3)
+    objp = np.asarray(data.xpos[obj_id], dtype=np.float64).reshape(3)
+    preset = np.asarray(cfg.preset_offset_xyz, dtype=np.float64).reshape(3)
+    rel = (objp + preset) - palm
+    step = float(cfg.gain) * rel
+    norm = float(np.linalg.norm(step))
+    if norm > float(cfg.max_step_m) and norm > 1e-12:
+        step = step * (float(cfg.max_step_m) / norm)
+    off = np.asarray(sim.root_position_offset, dtype=np.float64).reshape(3) + step
+    for i in range(3):
+        sim.root_position_offset[i] = float(off[i])
+    return True, (
+        f"assist_near_object: Δoffset={np.round(step, 4).tolist()}, "
+        f"preset={np.round(preset, 4).tolist()}, "
+        f"root_position_offset={np.round(off, 4).tolist()}"
+    )
+
+
+def _randomize_obj_goal_pose(
+    model: mujoco.MjModel, data: mujoco.MjData, runtime_cfg: RuntimeConfig
+) -> bool:
+    cfg = runtime_cfg.simulation.random_obj_goal
+    if not cfg.enabled:
+        return False
+
+    obj_pos = _sample_xyz(cfg.obj_position_ranges)
+    goal_pos = _sample_xyz(cfg.goal_position_ranges)
+
+    updated = False
+
+    obj_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.obj_body_name)
+    if obj_body_id < 0:
+        logger.warning(f"随机场景失败：未找到 body '{cfg.obj_body_name}'")
+    else:
+        body_joint_num = int(model.body_jntnum[obj_body_id])
+        body_joint_adr = int(model.body_jntadr[obj_body_id])
+        if body_joint_num > 0 and body_joint_adr >= 0:
+            joint_id = body_joint_adr
+            joint_type = model.jnt_type[joint_id]
+            if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+                qadr = int(model.jnt_qposadr[joint_id])
+                dadr = int(model.jnt_dofadr[joint_id])
+                data.qpos[qadr : qadr + 3] = obj_pos
+                data.qvel[dadr : dadr + 6] = 0.0
+                updated = True
+            else:
+                logger.warning(
+                    f"body '{cfg.obj_body_name}' 存在非 free joint，改为写入 model.body_pos"
+                )
+                model.body_pos[obj_body_id] = obj_pos
+                updated = True
+        else:
+            model.body_pos[obj_body_id] = obj_pos
+            updated = True
+
+    goal_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, cfg.goal_site_name)
+    if goal_site_id < 0:
+        logger.warning(f"随机场景失败：未找到 site '{cfg.goal_site_name}'")
+    else:
+        model.site_pos[goal_site_id] = goal_pos
+        updated = True
+
+    if updated:
+        mujoco.mj_forward(model, data)
+        logger.info(
+            "已随机重置 obj/goal："
+            f"{cfg.obj_body_name}={obj_pos.round(4).tolist()}, "
+            f"{cfg.goal_site_name}={goal_pos.round(4).tolist()}"
+        )
+    return updated
+
+
 def main(
     runtime_config_path: str,
     dataset_dir: str = "data/hdf5",
@@ -175,7 +270,16 @@ def main(
             mujoco.mj_forward(model, data)
             logger.info(f"已加载 startup_keyframe='{kf_name}' (id={kf_id})")
 
+    _randomize_obj_goal_pose(model, data, runtime_cfg)
+
     controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
+    # 仅在 wrist_mocap 模式下用于录制 action 的 mocap id（不影响控制逻辑）
+    mocap_id_for_action: Optional[int] = None
+    if runtime_cfg.simulation.mocap.wrist_mocap:
+        try:
+            mocap_id_for_action = controller._resolve_mocap_id()  # type: ignore[attr-defined]
+        except Exception as err:
+            logger.warning(f"解析 mocap_id 失败（action 将不包含 mocap 位姿）：{err}")
 
     recording_camera_specs, recording_camera_names = _setup_recording_cameras(
         model, runtime_cfg.simulation.camera_names
@@ -211,6 +315,8 @@ def main(
     should_exit = False
     record_start_requested = False
     record_stop_requested = False
+    randomize_requested = False
+    assist_near_object_pending = False
     is_recording = False
     episode_idx = 0
     episode_buffers: Optional[dict[str, list]] = None
@@ -277,14 +383,20 @@ def main(
         logger.info(f"Episode {idx} 已保存到 {dataset_path}, steps={max_timesteps}")
 
     def on_press(key):
-        nonlocal record_start_requested, record_stop_requested, should_exit
+        nonlocal record_start_requested, record_stop_requested, randomize_requested, should_exit, assist_near_object_pending
         try:
+            with keyboard_lock:
+                if key == keyboard.Key.space:
+                    assist_near_object_pending = True
+                    return
             if hasattr(key, "char") and key.char:
                 with keyboard_lock:
                     if key.char == start_key and not is_recording:
                         record_start_requested = True
                     elif key.char == stop_key and is_recording:
                         record_stop_requested = True
+                    elif key.char == "r":
+                        randomize_requested = True
                     elif key.char == "q":
                         should_exit = True
         except AttributeError:
@@ -293,14 +405,15 @@ def main(
     keyboard_listener = keyboard.Listener(on_press=on_press)
     keyboard_listener.start()
     logger.info(
-        f"键盘监听已启动：按 '{start_key}' 开始记录，按 '{stop_key}' 结束保存，按 'q' 退出"
+        f"键盘监听已启动：按 '{start_key}' 开始记录，按 '{stop_key}' 结束保存，按 'r' 随机重置 obj/goal，"
+        f"按 Space 在检测到手时沿 palm→obj 微调 root_position_offset，按 'q' 退出"
     )
 
     latest_msg = None
     control_interval = 1.0 / runtime_cfg.simulation.control_rate_hz
     last_control_time = time.time()
 
-    viewer = mujoco.viewer.launch_passive(model, data)
+    viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
     try:
         logger.info("Mujoco viewer 已启动")
         options = viewer.opt
@@ -320,6 +433,20 @@ def main(
                 latest_msg = msg
 
             if latest_msg is not None and now - last_control_time >= control_interval:
+                with keyboard_lock:
+                    assist_do = assist_near_object_pending
+                if assist_do:
+                    ch = runtime_cfg.simulation.control_hand
+                    if latest_msg.get(f"hand_{ch}_qpos") is not None:
+                        ok, assist_msg = _apply_assist_root_offset_from_palm_obj(
+                            model, data, runtime_cfg.simulation
+                        )
+                        if ok:
+                            logger.info(assist_msg)
+                        else:
+                            logger.warning(assist_msg)
+                        with keyboard_lock:
+                            assist_near_object_pending = False
                 controller.apply(data, latest_msg)
 
                 if rr is not None and board is not None:
@@ -410,7 +537,14 @@ def main(
 
                     episode_buffers["/observations/qpos"].append(qpos_sample)
                     episode_buffers["/observations/qvel"].append(qvel_sample)
-                    episode_buffers["/action"].append(np.asarray(data.ctrl).copy())
+                    ctrl_sample = np.asarray(data.ctrl).copy()
+                    if runtime_cfg.simulation.mocap.wrist_mocap and mocap_id_for_action is not None:
+                        mocap_pos = np.asarray(data.mocap_pos[mocap_id_for_action]).reshape(3).copy()
+                        mocap_quat = np.asarray(data.mocap_quat[mocap_id_for_action]).reshape(4).copy()
+                        action_sample = np.concatenate([mocap_pos, mocap_quat, ctrl_sample], axis=0)
+                    else:
+                        action_sample = ctrl_sample
+                    episode_buffers["/action"].append(action_sample)
 
                     for cam_name, cam_spec in recording_camera_specs:
                         try:
@@ -428,6 +562,7 @@ def main(
 
             pending_buffers = None
             pending_episode_idx = None
+            do_randomize = False
             with keyboard_lock:
                 if record_start_requested:
                     episode_buffers = init_episode_buffers()
@@ -442,9 +577,14 @@ def main(
                         episode_buffers = None
                     is_recording = False
                     record_stop_requested = False
+                if randomize_requested:
+                    do_randomize = True
+                    randomize_requested = False
 
             if pending_buffers is not None and pending_episode_idx is not None:
                 save_episode(pending_buffers, pending_episode_idx)
+            if do_randomize:
+                _randomize_obj_goal_pose(model, data, runtime_cfg)
 
             viewer.sync()
     except KeyboardInterrupt:

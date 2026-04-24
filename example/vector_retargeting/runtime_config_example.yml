@@ -24,6 +24,12 @@ retargeting:
 
 simulation:
   mj_xml_path: /home/lab/Documents/teleop_scene_left_077_rubiks_cube
+  random_obj_goal:
+    enabled: false
+    obj_body_name: obj
+    goal_site_name: site
+    obj_position_ranges: [[-0.2, 0.2], [0.5, 0.8], [0.03, 0.03]]
+    goal_position_ranges: [[-0.3, 0.3], [0.5, 0.8], [0.1, 0.3]]
   control_hand: left
   root_ctrl_indices: [0, 1, 2, 3, 4, 5]
   finger_ctrl_indices: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
@@ -39,3 +45,11 @@ simulation:
     wrist_mocap: false
     mocap_body_name: null
     mocap_id: null
+  # Space 键：在检测到手时沿 (obj - palm) 微调 root_position_offset（见 my_retargeting_mujoco）
+  assist_near_object:
+    gain: 0.25
+    max_step_m: 0.12
+    palm_body_name: LHand_PALM_LINK
+    obj_body_name: obj
+    # 你希望 palm 追踪的目标点：obj_world_pos + preset_offset_xyz
+    preset_offset_xyz: [0.0, 0.0, 0.0]

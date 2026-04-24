@@ -24,8 +24,26 @@ retargeting:
         low_pass_alpha: 1
   right: {}
 simulation:
-  mj_xml_path: /home/lab/Documents/proto5_description/Metaworld/metaworld/assets/ur5e_honda_hand/ur5e_hand_basketball.xml
+  mj_xml_path: /home/lab/Documents/proto5_description/Metaworld/metaworld/assets/ur5e_honda_hand/ur5e_hand_pick_place_v3.xml
   startup_keyframe: home
+  random_obj_goal:
+    enabled: true
+    obj_body_name: obj
+    goal_site_name: site
+    obj_position_ranges:
+    - - -0.2
+      - 0.2
+    - - 0.5
+      - 0.8
+    - - 0.03
+      - 0.03
+    goal_position_ranges:
+    - - -0.3
+      - 0.3
+    - - 0.5
+      - 0.8
+    - - 0.1
+      - 0.3
   control_hand: left
   root_ctrl_indices:
   - 0
@@ -55,12 +73,18 @@ simulation:
   - 17
   root_position_offset:
   - 0.0
-  - 0.5
-  - 0.2
+  - 0.4
+  - -0.1
   wrist_rotation_calib_matrix:
-    - [0, -1, 0]
+    - [1, 0, 0]
+    - [0, 1, 0]
     - [0, 0, 1]
-    - [-1, 0, 0]
+    # - [0, 0, -1]
+    # - [-1, 0, 0]
+    # - [0, 1, 0]
+    # - [0, -1, 0]
+    # - [0, 0, 1]
+    # - [-1, 0, 0]
   joint_indices:
   - 0
   - 1
@@ -86,9 +110,15 @@ simulation:
   - 21
   - 22
   - 23
-  camera_names: []
+  camera_names: [corner3, lhand_palm_right_cam]
   control_rate_hz: 60.0
   mocap:
     wrist_mocap: true
     mocap_body_name: mocap
     mocap_id: null
+  assist_near_object:
+    gain: 0.02
+    max_step_m: 0.12
+    palm_body_name: LHand_PALM_LINK
+    obj_body_name: obj
+    preset_offset_xyz: [0.0, -0.15, 0.1]

@@ -104,7 +104,7 @@ class MujocoHandController:
             if wrist_quat is not None:
                 quat = np.asarray(wrist_quat, dtype=np.float64).reshape(4)
                 r_w = _quat_wxyz_to_rotmat(quat)
-                data.mocap_quat[mocap_id] = _rotmat_to_quat_wxyz(r_cal @ r_w)
+                data.mocap_quat[mocap_id] = _rotmat_to_quat_wxyz(r_w @ r_cal)
             return
 
         if q.shape[0] >= 6:

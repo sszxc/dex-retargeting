@@ -88,6 +88,8 @@ python example/vector_retargeting/my_retargeting_mujoco.py --runtime-config-path
 - **`s`**：开始录制一个 episode
 - **`e`**：结束录制并保存 HDF5
 - **`q`**：退出
+- **`r`**：采样 obj & goal 随机位置
+- **space**: move assist
 
 #### 5.3 输出数据（HDF5）
 
