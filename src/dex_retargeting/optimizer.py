@@ -743,14 +743,112 @@ def allegro_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.nda
 
 def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.ndarray:
     """Proto5 left hand: Allegro-style geometry, pinocchio order (dummy6 + WRZ/WRY + 4×4 finger joints = 24)."""
-    a = allegro_left_dummy_qpos_from_leap_joint_pos(joint_pos)
+    # ---- Begin inlined copy of `allegro_left_dummy_qpos_from_leap_joint_pos` ----
+    joint_pos = np.asarray(joint_pos, dtype=np.float64)
+    a = np.zeros(22, dtype=np.float64)
+    p0, p5, p9, p13 = joint_pos[0], joint_pos[5], joint_pos[9], joint_pos[13]
+    v1 = p5 - p0
+    v2 = p9 - p0
+    v3 = p13 - p0
+    n1 = np.cross(v1, v2)
+    n2 = np.cross(v2, v3)
+    n3 = np.cross(v3, v1)
+    plane_normal = (n1 + n2 + n3) / 3.0
+    plane_normal = plane_normal / np.linalg.norm(plane_normal)
+    x_dir = p13 - p0
+    x_dir = x_dir / np.linalg.norm(x_dir)
+    y_dir = plane_normal
+    z_dir = np.cross(x_dir, y_dir)
+    z_dir = z_dir / np.linalg.norm(z_dir)
+    y_dir = np.cross(z_dir, x_dir)
+    y_dir = y_dir / np.linalg.norm(y_dir)
+    rotmat = np.stack([x_dir, y_dir, z_dir], axis=1)
+    SHIFTED = np.array(
+        [
+            [0, 0, 1],
+            [-1, 0, 0],
+            [0, -1, 0],
+        ],
+        dtype=np.float64,
+    )
+    rotmat = rotmat @ SHIFTED
+    import scipy.spatial.transform
+
+    euler_xyz = scipy.spatial.transform.Rotation.from_matrix(rotmat).as_euler("XYZ")
+    a[3:6] = euler_xyz
+    a[0:3] = joint_pos[0] + 0.03 * x_dir
+
+    def angle_between_vectors(v1, v2):
+        if np.linalg.norm(v1) < 1e-8 or np.linalg.norm(v2) < 1e-8:
+            return 0.0
+        v1_norm = v1 / np.linalg.norm(v1)
+        v2_norm = v2 / np.linalg.norm(v2)
+        dot = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
+        return np.arccos(dot)
+
+    def angle_between_plane_and_vector(plane_vector1, plane_vector2, vector):
+        if np.linalg.norm(plane_vector1) < 1e-8 or np.linalg.norm(plane_vector2) < 1e-8:
+            return 0.0
+        if np.linalg.norm(vector) < 1e-8:
+            return 0.0
+        plane_normal = np.cross(plane_vector1, plane_vector2)
+        norm_normal = np.linalg.norm(plane_normal)
+        if norm_normal < 1e-8:
+            return 0.0
+        plane_normal = plane_normal / norm_normal
+        vector_norm = vector / np.linalg.norm(vector)
+        dot = np.clip(np.dot(plane_normal, vector_norm), -1.0, 1.0)
+        angle_with_normal = np.arccos(dot)
+        return abs(np.pi / 2.0 - angle_with_normal)
+
+    # from dex_retargeting.thumb_retarget import calculate_thumb_angles
+
+    # # thumb
+    # vec_in_new_coord = rotmat.T @ (joint_pos[3] - joint_pos[2])
+    # _success, _angles, _error, _actual_vec = calculate_thumb_angles(vec_in_new_coord)
+    # a[10:13] = _angles
+    # angle between [0-4] and xy plane
+    a[10] = angle_between_plane_and_vector(joint_pos[0] - joint_pos[4], x_dir, y_dir) * -1.5
+    a[11] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
+    a[12] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
+    a[13] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
+
+    # index
+    # a[18] = angle_between_plane_and_vector(
+    #     joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir
+    # )
+    a[18] = angle_between_vectors(joint_pos[5] - joint_pos[8], joint_pos[9] - joint_pos[12]) * 2 - 0.3
+    a[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7]) - 0.1
+    a[19] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6]) - 0.1
+    a[20] = 0.5 * (a[19] + a[21])
+
+    # middle
+    a[14] = angle_between_plane_and_vector(
+        joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], y_dir
+    ) * 2 - 0.4
+    a[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11]) - 0.1
+    a[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10]) - 0.1
+    a[15] = 0.5 * (a[14] + a[16])
+
+    # ring
+    # a[6] = angle_between_plane_and_vector(
+    #     joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir
+    # )
+    a[6] = angle_between_vectors(joint_pos[13] - joint_pos[16], joint_pos[9] - joint_pos[12]) * -2 + 0.3
+    a[9] = angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15]) - 0.1
+    a[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14]) - 0.1
+    a[7] = 0.5 * (a[6] + a[8])
+
+    a = a.astype(np.float32)
+    # ---- End inlined copy ----
+
     result = np.zeros(24, dtype=np.float32)
     result[0:6] = a[0:6]
     result[6:8] = 0.0
-    result[8:12] = a[18:22]
-    result[12:16] = a[14:18]
-    result[16:20] = a[6:10]
-    result[20:24] = a[10:14]
+    result[8:12] = a[18:22]  # index
+    result[12:16] = a[14:18]  # middle
+    result[16:20] = a[6:10]  # ring
+    result[20:24] = a[10:14]  # thumb
     return result
 
 
@@ -763,7 +861,13 @@ class JointOptimizer(Optimizer):
     retargeting_type = "JOINT"
 
     # Supported URDF stems for direct mapping
-    _SUPPORTED_ROBOTS = frozenset({"allegro_hand_left", "hmf_hand_proto5_release_left"})
+    _SUPPORTED_ROBOTS = frozenset(
+        {
+            "allegro_hand_left",
+            "hmf_hand_proto5_release_left",
+            "hmf_hand_proto5_release_right_ur7e",
+        }
+    )
 
     def __init__(
         self,
@@ -804,18 +908,36 @@ class JointOptimizer(Optimizer):
                     f"JointOptimizer: allegro expects opt_dof=22, got {self.opt_dof}"
                 )
             return raw
-        if self.robot_name == "hmf_hand_proto5_release_left":
-            raw = hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos)
-            if raw.shape[0] != self.opt_dof:
-                raise ValueError(
-                    f"JointOptimizer: Proto5 expects opt_dof=24, got {self.opt_dof}"
+        if self.robot_name in {
+            "hmf_hand_proto5_release_left",
+            "hmf_hand_proto5_release_right_ur7e",
+        }:
+            # Canonical Proto5 layout from detector mapping:
+            # [dummy6, wrist2, finger16] = 24 DOF
+            proto5_24 = hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos)
+            if self.opt_dof == 24:
+                return proto5_24
+            if self.opt_dof == 22:
+                # Finger-only control layout:
+                # [dummy6, finger16] (drop WRZ/WRY)
+                return np.concatenate([proto5_24[:6], proto5_24[8:24]], axis=0).astype(
+                    np.float32
                 )
-            return raw
+            if self.opt_dof == 30:
+                # UR7e+hand full layout:
+                # [dummy6, arm6, wrist2, finger16]
+                arm6 = np.zeros(6, dtype=np.float32)
+                return np.concatenate([proto5_24[:6], arm6, proto5_24[6:24]], axis=0)
+            raise ValueError(
+                f"JointOptimizer: Proto5 expects opt_dof in {{22, 24, 30}}, got {self.opt_dof}"
+            )
         raise ValueError(f"JointOptimizer: unsupported robot name: {self.robot_name}")
 
     def retarget(self, ref_value: np.ndarray, fixed_qpos: np.ndarray, last_qpos: np.ndarray):
         """Return ``_compute_qpos_from_joint_pos(ref_value)`` (``ref_value`` is ``joint_pos``)."""
-        if len(fixed_qpos) != len(self.idx_pin2fixed):
+        # JointOptimizer computes qpos analytically from landmarks and can safely
+        # ignore fixed_qpos in streaming teleop (often passed as empty).
+        if len(fixed_qpos) not in (0, len(self.idx_pin2fixed)):
             raise ValueError(
                 f"JointOptimizer: expected {len(self.idx_pin2fixed)} fixed joints, got {len(fixed_qpos)}"
             )

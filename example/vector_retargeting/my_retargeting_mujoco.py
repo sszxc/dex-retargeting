@@ -92,6 +92,21 @@ def _make_rerun_board(enabled: bool):
         return (DummyClass() if DummyClass is not None else None), None
 
 
+def _apply_passive_viewer_camera(viewer, sim: SimulationConfig) -> None:
+    """Apply optional mjvCamera fields from runtime YAML; no-op if simulation.viewer_camera is absent."""
+    cfg = sim.viewer_camera
+    if cfg is None:
+        return
+    if cfg.lookat is not None:
+        viewer.cam.lookat[:] = np.asarray(cfg.lookat, dtype=np.float64).reshape(3)
+    if cfg.azimuth is not None:
+        viewer.cam.azimuth = float(cfg.azimuth)
+    if cfg.elevation is not None:
+        viewer.cam.elevation = float(cfg.elevation)
+    if cfg.distance is not None:
+        viewer.cam.distance = float(cfg.distance)
+
+
 def _make_dynamic_camera(par: dict) -> mujoco.MjvCamera:
     camera = mujoco.MjvCamera()
     try:
@@ -420,7 +435,9 @@ def main(
         mujoco.mjv_defaultOption(options)
         options.flags[mujoco.mjtVisFlag.mjVIS_CAMERA] = True
         options.label = mujoco.mjtLabel.mjLABEL_CAMERA
+        _apply_passive_viewer_camera(viewer, runtime_cfg.simulation)
         sim_start = time.time()
+        sim_time_start = float(data.time)
 
         while viewer.is_running() and not should_exit:
             now = time.time()
@@ -557,7 +574,10 @@ def main(
                             logger.warning(f"Render camera {cam_name} failed: {err}")
                 last_control_time = now
 
-            while data.time < now - sim_start:
+            # Keep simulation wall-clock synchronized even when startup keyframe
+            # initializes data.time to a non-zero value.
+            target_sim_time = sim_time_start + (now - sim_start)
+            while data.time < target_sim_time:
                 mujoco.mj_step(model, data)
 
             pending_buffers = None

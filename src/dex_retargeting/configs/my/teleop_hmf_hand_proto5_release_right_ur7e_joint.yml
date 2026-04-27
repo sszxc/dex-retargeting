@@ -14,37 +14,54 @@ sensor:
     - 0.0
   rerun_enabled: false
 retargeting:
-  mode: single_left
-  left:
-    urdf_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_left.urdf
+  mode: single_right
+  right:
+    urdf_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e.urdf
     add_dummy_free_joint: true
+    target_joint_names:
+    - RHand_I1Z_joint
+    - RHand_I1Y_joint
+    - RHand_I2Y_joint
+    - RHand_I3Y_joint
+    - RHand_M1Z_joint
+    - RHand_M1Y_joint
+    - RHand_M2Y_joint
+    - RHand_M3Y_joint
+    - RHand_R1Z_joint
+    - RHand_R1Y_joint
+    - RHand_R2Y_joint
+    - RHand_R3Y_joint
+    - RHand_T1Z_joint
+    - RHand_T1Y_joint
+    - RHand_T2Y_joint
+    - RHand_T3Y_joint
     optimizer:
       type: joint
       params:
         low_pass_alpha: 1
-  right: {}
+  left: {}
 simulation:
-  mj_xml_path: /home/lab/Documents/proto5_description/Metaworld/metaworld/assets/ur5e_honda_hand/ur5e_hand_pick_place_v3.xml
+  mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene.xml
   startup_keyframe: home
   random_obj_goal:
     enabled: true
     obj_body_name: obj
-    goal_site_name: site
+    goal_site_name: goal
     obj_position_ranges:
     - - -0.2
       - 0.2
     - - 0.5
       - 0.8
-    - - 0.03
-      - 0.03
+    - - 0.66
+      - 0.66
     goal_position_ranges:
     - - -0.3
       - 0.3
     - - 0.5
       - 0.8
-    - - 0.1
-      - 0.3
-  control_hand: left
+    - - 0.7
+      - 0.9
+  control_hand: right
   root_ctrl_indices:
   - 0
   - 1
@@ -69,22 +86,8 @@ simulation:
   - 13
   - 14
   - 15
-  - 16
-  - 17
-  root_position_offset:
-  - 0.0
-  - 0.4
-  - -0.1
-  wrist_rotation_calib_matrix:
-    - [1, 0, 0]
-    - [0, 1, 0]
-    - [0, 0, 1]
-    # - [0, 0, -1]
-    # - [-1, 0, 0]
-    # - [0, 1, 0]
-    # - [0, -1, 0]
-    # - [0, 0, 1]
-    # - [-1, 0, 0]
+  root_position_offset: [0.0, 0.6, 0.65]
+  wrist_rotation_offset_rpy: [1.57, 0, -2.5]
   joint_indices:
   - 0
   - 1
@@ -110,7 +113,13 @@ simulation:
   - 21
   - 22
   - 23
-  camera_names: [corner3, lhand_palm_right_cam]
+  camera_names: [corner3, rhand_palm_right_cam]
+  # Passive MuJoCo viewer (launch_passive); omit viewer_camera to keep viewer defaults.
+  viewer_camera:
+    lookat: [0.0, 0.6, 0.6]
+    azimuth: 30
+    elevation: -30
+    distance: 2.0
   control_rate_hz: 60.0
   mocap:
     wrist_mocap: true
@@ -119,6 +128,6 @@ simulation:
   assist_near_object:
     gain: 0.02
     max_step_m: 0.12
-    palm_body_name: LHand_PALM_LINK
+    palm_body_name: RHand_PALM_LINK
     obj_body_name: obj
     preset_offset_xyz: [0.0, -0.15, 0.1]

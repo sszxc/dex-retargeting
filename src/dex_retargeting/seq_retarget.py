@@ -127,6 +127,14 @@ class SeqRetargeting:
         """
         tic = time.perf_counter()
 
+        if len(fixed_qpos) == 0 and len(self.optimizer.idx_pin2fixed) > 0:
+            # Teleop joint-mode commonly omits fixed joints; keep them at zero.
+            fixed_qpos = np.zeros(len(self.optimizer.idx_pin2fixed), dtype=np.float32)
+        elif len(fixed_qpos) not in (0, len(self.optimizer.idx_pin2fixed)):
+            raise ValueError(
+                f"SeqRetargeting: expected fixed_qpos length {len(self.optimizer.idx_pin2fixed)}, got {len(fixed_qpos)}"
+            )
+
         qpos = self.optimizer.retarget(
             ref_value=ref_value.astype(np.float32),
             fixed_qpos=fixed_qpos.astype(np.float32),

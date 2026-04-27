@@ -54,10 +54,7 @@ simulation:
   - 0.2
   - 0.0
   - -0.6
-  wrist_rotation_calib_matrix:
-    - [1.0, 0.0, 0.0]
-    - [0.0, 1.0, 0.0]
-    - [0.0, 0.0, 1.0]
+  wrist_rotation_offset_rpy: [0.0, 0.0, 0.0]
   joint_indices:
   - 0
   - 1

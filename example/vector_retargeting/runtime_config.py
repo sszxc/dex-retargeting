@@ -182,6 +182,40 @@ class RandomObjGoalConfig:
         )
 
 
+def _optional_float_in_dict(d: Dict[str, Any], key: str) -> Optional[float]:
+    if key not in d:
+        return None
+    v = d[key]
+    if v is None:
+        return None
+    return float(v)
+
+
+@dataclass
+class PassiveViewerCameraConfig:
+    """Optional MuJoCo passive viewer (mjvCamera) overrides; unset fields keep viewer defaults."""
+
+    lookat: Optional[List[float]] = None
+    azimuth: Optional[float] = None
+    elevation: Optional[float] = None
+    distance: Optional[float] = None
+
+    def validate(self) -> None:
+        if self.lookat is not None:
+            arr = np.asarray(self.lookat, dtype=np.float64).reshape(-1)
+            if arr.shape[0] != 3 or not np.all(np.isfinite(arr)):
+                raise ValueError(
+                    "simulation.viewer_camera.lookat must be length-3 finite values [x, y, z]"
+                )
+        for name, val in (
+            ("azimuth", self.azimuth),
+            ("elevation", self.elevation),
+            ("distance", self.distance),
+        ):
+            if val is not None and not np.isfinite(val):
+                raise ValueError(f"simulation.viewer_camera.{name} must be finite or omitted")
+
+
 @dataclass
 class AssistNearObjectConfig:
     """Space key: nudge root_position_offset along (obj - palm) to help teleop reach the object."""
@@ -228,6 +262,7 @@ class SimulationConfig:
     mocap: MocapConfig = field(default_factory=MocapConfig)
     random_obj_goal: RandomObjGoalConfig = field(default_factory=RandomObjGoalConfig)
     assist_near_object: AssistNearObjectConfig = field(default_factory=AssistNearObjectConfig)
+    viewer_camera: Optional[PassiveViewerCameraConfig] = None
 
     def validate(self) -> None:
         if self.control_hand not in {"left", "right"}:
@@ -250,6 +285,8 @@ class SimulationConfig:
             raise ValueError("simulation.control_rate_hz must be > 0")
         self.random_obj_goal.validate()
         self.assist_near_object.validate()
+        if self.viewer_camera is not None:
+            self.viewer_camera.validate()
 
 
 @dataclass
@@ -285,22 +322,47 @@ def _parse_retargeting(raw: Dict[str, Any]) -> RetargetingConfigRuntime:
 
 
 def _parse_wrist_rotation_calib_matrix(raw: Dict[str, Any]) -> List[List[float]]:
-    """Parse wrist_rotation_calib_matrix; if only deprecated root_rotation_offset_euler_zyx is set, build ZYX matrix."""
-    if "wrist_rotation_calib_matrix" in raw:
-        mat = np.asarray(raw["wrist_rotation_calib_matrix"], dtype=np.float64)
-        if mat.shape != (3, 3):
-            raise ValueError("simulation.wrist_rotation_calib_matrix must be 3x3")
-        return mat.tolist()
-    legacy = raw.get("root_rotation_offset_euler_zyx")
-    if legacy is not None:
-        euler = np.asarray(legacy, dtype=np.float64).reshape(-1)
-        if euler.shape[0] != 3:
-            raise ValueError("simulation.root_rotation_offset_euler_zyx (deprecated) must have length 3")
-        rz, ry, rx = float(euler[0]), float(euler[1]), float(euler[2])
-        if abs(rz) + abs(ry) + abs(rx) < 1e-12:
-            return _identity_3x3()
-        return _rotation_matrix_fixed_zyx(rz, ry, rx).tolist()
-    return _identity_3x3()
+    """Parse wrist rotation offset from [roll, pitch, yaw] (radians)."""
+    if "wrist_rotation_calib_matrix" in raw or "root_rotation_offset_euler_zyx" in raw:
+        raise ValueError(
+            "simulation.wrist_rotation_calib_matrix and simulation.root_rotation_offset_euler_zyx are no longer supported. "
+            "Use simulation.wrist_rotation_offset_rpy: [roll, pitch, yaw] in radians."
+        )
+
+    rpy = raw.get("wrist_rotation_offset_rpy")
+    if rpy is None:
+        return _identity_3x3()
+
+    euler = np.asarray(rpy, dtype=np.float64).reshape(-1)
+    if euler.shape[0] != 3:
+        raise ValueError("simulation.wrist_rotation_offset_rpy must have length 3: [roll, pitch, yaw]")
+    roll, pitch, yaw = float(euler[0]), float(euler[1]), float(euler[2])
+    if abs(roll) + abs(pitch) + abs(yaw) < 1e-12:
+        return _identity_3x3()
+    # Same fixed-axis convention as mujoco_control: R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
+    return _rotation_matrix_fixed_zyx(yaw, pitch, roll).tolist()
+
+
+def _parse_passive_viewer_camera(raw: Dict[str, Any]) -> Optional[PassiveViewerCameraConfig]:
+    block = raw.get("viewer_camera")
+    if block is None or block is False:
+        return None
+    if not isinstance(block, dict):
+        raise ValueError("simulation.viewer_camera must be a mapping or null")
+    lookat: Optional[List[float]] = None
+    if "lookat" in block and block["lookat"] is not None:
+        lookat = [float(x) for x in block["lookat"]]
+    azimuth = _optional_float_in_dict(block, "azimuth")
+    elevation = _optional_float_in_dict(block, "elevation")
+    distance = _optional_float_in_dict(block, "distance")
+    if lookat is None and azimuth is None and elevation is None and distance is None:
+        return None
+    return PassiveViewerCameraConfig(
+        lookat=lookat,
+        azimuth=azimuth,
+        elevation=elevation,
+        distance=distance,
+    )
 
 
 def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
@@ -354,6 +416,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
         mocap=mocap,
         random_obj_goal=random_obj_goal,
         assist_near_object=assist_near_object,
+        viewer_camera=_parse_passive_viewer_camera(raw),
     )
 
 

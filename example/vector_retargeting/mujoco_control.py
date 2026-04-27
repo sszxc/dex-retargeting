@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+import time
 
 import mujoco
 import numpy as np
@@ -44,6 +45,7 @@ class MujocoHandController:
     simulation: SimulationConfig
     model: mujoco.MjModel
     _resolved_mocap_id: Optional[int] = None
+    _last_diag_log_time: float = 0.0
 
     def _resolve_mocap_id(self) -> Optional[int]:
         if not self.simulation.mocap.wrist_mocap:
@@ -83,10 +85,46 @@ class MujocoHandController:
                 f"hand qpos too short: need {need} (dummy 6 + fingers {n_finger}), got {q.shape[0]}; skipping frame"
             )
             return
-        finger_values = q[6:need]
+        # Robustly take the trailing finger block.
+        # This supports:
+        # - dummy + fingers
+        # - dummy + wrist + fingers
+        # - dummy + arm + wrist + fingers
+        # as long as finger joints are the last n_finger entries.
+        finger_values = q[-n_finger:]
 
         for ctrl_idx, value in zip(self.simulation.finger_ctrl_indices, finger_values):
             data.ctrl[int(ctrl_idx)] = value
+
+        now = time.time()
+        if now - self._last_diag_log_time > 1.0:
+            self._last_diag_log_time = now
+            finger_ctrl = np.asarray(
+                [data.ctrl[int(i)] for i in self.simulation.finger_ctrl_indices],
+                dtype=np.float64,
+            )
+            finger_qpos = []
+            for act_id in self.simulation.finger_ctrl_indices:
+                jnt_id = int(self.model.actuator_trnid[int(act_id), 0])
+                if jnt_id < 0:
+                    continue
+                qadr = int(self.model.jnt_qposadr[jnt_id])
+                finger_qpos.append(float(data.qpos[qadr]))
+            finger_qpos_arr = np.asarray(finger_qpos, dtype=np.float64)
+            if finger_qpos_arr.size > 0:
+                track_err = float(np.mean(np.abs(finger_ctrl[: finger_qpos_arr.size] - finger_qpos_arr)))
+                qpos_part = (
+                    f" finger_joint_qpos[min,max]=[{float(np.min(finger_qpos_arr)):.4f},{float(np.max(finger_qpos_arr)):.4f}]"
+                    f" mean|ctrl-qpos|={track_err:.4f}"
+                )
+            else:
+                qpos_part = " finger_joint_qpos=n/a"
+            logger.info(
+                f"[control_diag] hand={hand} qdim={q.shape[0]} "
+                f"finger_q[min,max]=[{float(np.min(finger_values)):.4f},{float(np.max(finger_values)):.4f}] "
+                f"ctrl[min,max]=[{float(np.min(finger_ctrl)):.4f},{float(np.max(finger_ctrl)):.4f}]"
+                f"{qpos_part}"
+            )
 
         if self.simulation.mocap.wrist_mocap:
             mocap_id = self._resolve_mocap_id()

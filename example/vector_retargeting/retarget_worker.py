@@ -140,6 +140,7 @@ def run_retarget_worker(
     source = _build_source(runtime_cfg, active_hands)
     if source is None:
         raise ValueError(f"Unsupported input source: {runtime_cfg.sensor.input_source}")
+    no_hand_warn_ts = {hand: 0.0 for hand in active_hands}
 
     try:
         while True:
@@ -148,6 +149,13 @@ def run_retarget_worker(
             for hand in active_hands:
                 obs = obs_map.get(hand, HandObservation(None, None, None))
                 if obs.joint_pos is None:
+                    now = time.time()
+                    if now - no_hand_warn_ts[hand] > 2.0:
+                        logger.warning(
+                            f"No {hand} hand landmarks from input source yet; "
+                            f"check hand side/visibility/tracking."
+                        )
+                        no_hand_warn_ts[hand] = now
                     continue
                 ref_value = _build_ref_value(retargeters[hand], obs.joint_pos)
                 robot_qpos = retargeters[hand].retarget(ref_value)
