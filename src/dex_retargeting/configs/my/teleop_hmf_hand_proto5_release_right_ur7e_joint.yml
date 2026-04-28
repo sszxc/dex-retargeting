@@ -113,7 +113,7 @@ simulation:
   - 21
   - 22
   - 23
-  camera_names: [corner3, rhand_palm_right_cam]
+  camera_names: [topview, corner]
   # Passive MuJoCo viewer (launch_passive); omit viewer_camera to keep viewer defaults.
   viewer_camera:
     lookat: [0.0, 0.6, 0.6]

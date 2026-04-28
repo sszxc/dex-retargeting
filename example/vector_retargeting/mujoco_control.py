@@ -119,12 +119,12 @@ class MujocoHandController:
                 )
             else:
                 qpos_part = " finger_joint_qpos=n/a"
-            logger.info(
-                f"[control_diag] hand={hand} qdim={q.shape[0]} "
-                f"finger_q[min,max]=[{float(np.min(finger_values)):.4f},{float(np.max(finger_values)):.4f}] "
-                f"ctrl[min,max]=[{float(np.min(finger_ctrl)):.4f},{float(np.max(finger_ctrl)):.4f}]"
-                f"{qpos_part}"
-            )
+            # logger.info(
+            #     f"[control_diag] hand={hand} qdim={q.shape[0]} "
+            #     f"finger_q[min,max]=[{float(np.min(finger_values)):.4f},{float(np.max(finger_values)):.4f}] "
+            #     f"ctrl[min,max]=[{float(np.min(finger_ctrl)):.4f},{float(np.max(finger_ctrl)):.4f}]"
+            #     f"{qpos_part}"
+            # )
 
         if self.simulation.mocap.wrist_mocap:
             mocap_id = self._resolve_mocap_id()

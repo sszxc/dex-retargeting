@@ -818,16 +818,16 @@ def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.
     #     joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir
     # )
     a[18] = angle_between_vectors(joint_pos[5] - joint_pos[8], joint_pos[9] - joint_pos[12]) * 2 - 0.3
-    a[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7]) - 0.1
-    a[19] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6]) - 0.1
+    a[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7])*0.5 - 0.1
+    a[19] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])*1.5 - 0.1
     a[20] = 0.5 * (a[19] + a[21])
 
     # middle
     a[14] = angle_between_plane_and_vector(
         joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], y_dir
     ) * 2 - 0.4
-    a[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11]) - 0.1
-    a[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10]) - 0.1
+    a[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11])*0.5 - 0.1
+    a[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])*1.5 - 0.1
     a[15] = 0.5 * (a[14] + a[16])
 
     # ring
@@ -835,8 +835,8 @@ def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.
     #     joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir
     # )
     a[6] = angle_between_vectors(joint_pos[13] - joint_pos[16], joint_pos[9] - joint_pos[12]) * -2 + 0.3
-    a[9] = angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15]) - 0.1
-    a[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14]) - 0.1
+    a[9] = angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15])*0.5 - 0.1
+    a[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14])*1.5 - 0.1
     a[7] = 0.5 * (a[6] + a[8])
 
     a = a.astype(np.float32)
