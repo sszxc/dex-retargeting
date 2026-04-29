@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from queue import Empty
+from queue import Empty, Full
 from typing import Optional
 
 import h5py
@@ -23,6 +23,7 @@ from runtime_config import RuntimeConfig, SimulationConfig, load_runtime_config
 
 DEFAULT_LOOKAT = [0.0, 0.0, 0.2]
 DEFAULT_CAMERA_PARAMS = {"distance": 0.8, "elevation": -30, "azimuth": 0}
+DEFAULT_VIEWER_COUNT = 2
 
 def _repo_root() -> Path:
     return Path(__file__).absolute().parent.parent.parent
@@ -105,6 +106,108 @@ def _apply_passive_viewer_camera(viewer, sim: SimulationConfig) -> None:
         viewer.cam.elevation = float(cfg.elevation)
     if cfg.distance is not None:
         viewer.cam.distance = float(cfg.distance)
+
+
+def _configure_passive_viewer(viewer, sim: SimulationConfig) -> None:
+    options = viewer.opt
+    mujoco.mjv_defaultOption(options)
+    options.flags[mujoco.mjtVisFlag.mjVIS_CAMERA] = True
+    options.label = mujoco.mjtLabel.mjLABEL_CAMERA
+    _apply_passive_viewer_camera(viewer, sim)
+
+
+def _launch_passive_viewer(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    sim: SimulationConfig,
+    viewer_index: int,
+    viewer_count: int,
+):
+    viewer = mujoco.viewer.launch_passive(
+        model, data, show_left_ui=False, show_right_ui=False
+    )
+    _configure_passive_viewer(viewer, sim)
+    logger.info(f"MuJoCo viewer {viewer_index}/{viewer_count} started")
+    return viewer
+
+
+def _make_viewer_state_snapshot(model: mujoco.MjModel, data: mujoco.MjData) -> dict:
+    return {
+        "time": float(data.time),
+        "qpos": np.asarray(data.qpos).copy(),
+        "qvel": np.asarray(data.qvel).copy(),
+        "ctrl": np.asarray(data.ctrl).copy(),
+        "mocap_pos": np.asarray(data.mocap_pos).copy(),
+        "mocap_quat": np.asarray(data.mocap_quat).copy(),
+        "body_pos": np.asarray(model.body_pos).copy(),
+        "site_pos": np.asarray(model.site_pos).copy(),
+    }
+
+
+def _apply_viewer_state_snapshot(
+    model: mujoco.MjModel, data: mujoco.MjData, snapshot: dict
+) -> None:
+    data.time = float(snapshot["time"])
+    data.qpos[:] = snapshot["qpos"]
+    data.qvel[:] = snapshot["qvel"]
+    data.ctrl[:] = snapshot["ctrl"]
+    if model.nmocap > 0:
+        data.mocap_pos[:] = snapshot["mocap_pos"]
+        data.mocap_quat[:] = snapshot["mocap_quat"]
+    model.body_pos[:] = snapshot["body_pos"]
+    model.site_pos[:] = snapshot["site_pos"]
+    mujoco.mj_forward(model, data)
+
+
+def _publish_viewer_state(queues: list[multiprocessing.Queue], snapshot: dict) -> None:
+    for queue in queues:
+        try:
+            queue.put_nowait(snapshot)
+        except Full:
+            try:
+                queue.get_nowait()
+            except Empty:
+                pass
+            try:
+                queue.put_nowait(snapshot)
+            except Full:
+                pass
+
+
+def _run_secondary_viewer(
+    mj_xml_path: str,
+    sim: SimulationConfig,
+    state_queue: multiprocessing.Queue,
+    stop_event: multiprocessing.Event,
+    viewer_index: int,
+    viewer_count: int,
+) -> None:
+    model = mujoco.MjModel.from_xml_path(mj_xml_path)
+    data = mujoco.MjData(model)
+    viewer = _launch_passive_viewer(model, data, sim, viewer_index, viewer_count)
+    try:
+        while viewer.is_running() and not stop_event.is_set():
+            latest_snapshot = None
+            try:
+                latest_snapshot = state_queue.get(timeout=0.01)
+            except Empty:
+                pass
+            while True:
+                try:
+                    latest_snapshot = state_queue.get_nowait()
+                except Empty:
+                    break
+
+            if latest_snapshot is not None:
+                _apply_viewer_state_snapshot(model, data, latest_snapshot)
+            viewer.sync()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            viewer.close()
+        except Exception:
+            pass
 
 
 def _make_dynamic_camera(par: dict) -> mujoco.MjvCamera:
@@ -255,6 +358,7 @@ def main(
     dataset_dir: str = "data/hdf5",
     start_key: str = "s",
     stop_key: str = "e",
+    viewer_count: int = DEFAULT_VIEWER_COUNT,
 ):
     runtime_cfg: RuntimeConfig = load_runtime_config(runtime_config_path)
     logger.info(
@@ -299,7 +403,6 @@ def main(
     recording_camera_specs, recording_camera_names = _setup_recording_cameras(
         model, runtime_cfg.simulation.camera_names
     )
-    renderer = mujoco.Renderer(model, width=640, height=480)
 
     robots_for_vis = {}
     joint_connections_for_vis = {}
@@ -417,6 +520,31 @@ def main(
         except AttributeError:
             pass
 
+    total_viewer_count = max(1, int(viewer_count))
+    secondary_viewer_queues: list[multiprocessing.Queue] = []
+    secondary_viewer_stop_events: list[multiprocessing.Event] = []
+    secondary_viewer_processes: list[multiprocessing.Process] = []
+    for secondary_i in range(1, total_viewer_count):
+        state_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=2)
+        stop_event = multiprocessing.Event()
+        viewer_process = multiprocessing.Process(
+            target=_run_secondary_viewer,
+            args=(
+                str(mj_xml_path),
+                runtime_cfg.simulation,
+                state_queue,
+                stop_event,
+                secondary_i + 1,
+                total_viewer_count,
+            ),
+        )
+        viewer_process.start()
+        secondary_viewer_queues.append(state_queue)
+        secondary_viewer_stop_events.append(stop_event)
+        secondary_viewer_processes.append(viewer_process)
+
+    renderer = mujoco.Renderer(model, width=640, height=480)
+
     keyboard_listener = keyboard.Listener(on_press=on_press)
     keyboard_listener.start()
     logger.info(
@@ -428,14 +556,17 @@ def main(
     control_interval = 1.0 / runtime_cfg.simulation.control_rate_hz
     last_control_time = time.time()
 
-    viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
+    viewer = _launch_passive_viewer(
+        model=model,
+        data=data,
+        sim=runtime_cfg.simulation,
+        viewer_index=1,
+        viewer_count=total_viewer_count,
+    )
+    _publish_viewer_state(
+        secondary_viewer_queues, _make_viewer_state_snapshot(model, data)
+    )
     try:
-        logger.info("MuJoCo viewer started")
-        options = viewer.opt
-        mujoco.mjv_defaultOption(options)
-        options.flags[mujoco.mjtVisFlag.mjVIS_CAMERA] = True
-        options.label = mujoco.mjtLabel.mjLABEL_CAMERA
-        _apply_passive_viewer_camera(viewer, runtime_cfg.simulation)
         sim_start = time.time()
         sim_time_start = float(data.time)
 
@@ -606,6 +737,9 @@ def main(
             if do_randomize:
                 _randomize_obj_goal_pose(model, data, runtime_cfg)
 
+            _publish_viewer_state(
+                secondary_viewer_queues, _make_viewer_state_snapshot(model, data)
+            )
             viewer.sync()
     except KeyboardInterrupt:
         logger.info("Ctrl-C received; shutting down and cleaning up")
@@ -628,6 +762,17 @@ def main(
             viewer.close()
         except Exception:
             pass
+
+        for stop_event in secondary_viewer_stop_events:
+            stop_event.set()
+        for viewer_process in secondary_viewer_processes:
+            try:
+                viewer_process.join(timeout=1.0)
+                if viewer_process.is_alive():
+                    viewer_process.terminate()
+                    viewer_process.join()
+            except Exception:
+                pass
 
         # Extra glfw.terminate() avoids repeated GLFW cleanup warnings after Ctrl-C on some setups
         try:
