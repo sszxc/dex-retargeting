@@ -182,6 +182,22 @@ class RandomObjGoalConfig:
         )
 
 
+@dataclass
+class TaskResetJointConfig:
+    enabled: bool = False
+    name: Optional[str] = None
+    value: Any = 0.0
+
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        if self.name is None or not str(self.name).strip():
+            raise ValueError("simulation.task_reset_joint.name cannot be empty when enabled")
+        arr = np.asarray(self.value, dtype=np.float64).reshape(-1)
+        if arr.size < 1 or not np.all(np.isfinite(arr)):
+            raise ValueError("simulation.task_reset_joint.value must contain finite value(s)")
+
+
 def _optional_float_in_dict(d: Dict[str, Any], key: str) -> Optional[float]:
     if key not in d:
         return None
@@ -261,6 +277,7 @@ class SimulationConfig:
     control_rate_hz: float = 60.0
     mocap: MocapConfig = field(default_factory=MocapConfig)
     random_obj_goal: RandomObjGoalConfig = field(default_factory=RandomObjGoalConfig)
+    task_reset_joint: TaskResetJointConfig = field(default_factory=TaskResetJointConfig)
     assist_near_object: AssistNearObjectConfig = field(default_factory=AssistNearObjectConfig)
     viewer_camera: Optional[PassiveViewerCameraConfig] = None
 
@@ -284,6 +301,7 @@ class SimulationConfig:
         if self.control_rate_hz <= 0:
             raise ValueError("simulation.control_rate_hz must be > 0")
         self.random_obj_goal.validate()
+        self.task_reset_joint.validate()
         self.assist_near_object.validate()
         if self.viewer_camera is not None:
             self.viewer_camera.validate()
@@ -365,6 +383,24 @@ def _parse_passive_viewer_camera(raw: Dict[str, Any]) -> Optional[PassiveViewerC
     )
 
 
+def _parse_task_reset_joint(raw: Dict[str, Any]) -> TaskResetJointConfig:
+    block = raw.get("task_reset_joint", {})
+    if block is None or block is False:
+        return TaskResetJointConfig(enabled=False)
+    if block is True:
+        raise ValueError(
+            "simulation.task_reset_joint=true requires a mapping with name/value, "
+            "e.g. task_reset_joint: {enabled: true, name: goal_slidey, value: 0.0}"
+        )
+    if not isinstance(block, dict):
+        raise ValueError("simulation.task_reset_joint must be a mapping, false, or omitted")
+    return TaskResetJointConfig(
+        enabled=bool(block.get("enabled", False)),
+        name=(str(block["name"]).strip() if block.get("name") is not None else None),
+        value=block.get("value", 0.0),
+    )
+
+
 def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
     mocap_raw = dict(raw.get("mocap", {}))
     mocap = MocapConfig(
@@ -415,6 +451,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
         control_rate_hz=float(raw.get("control_rate_hz", 60.0)),
         mocap=mocap,
         random_obj_goal=random_obj_goal,
+        task_reset_joint=_parse_task_reset_joint(raw),
         assist_near_object=assist_near_object,
         viewer_camera=_parse_passive_viewer_camera(raw),
     )

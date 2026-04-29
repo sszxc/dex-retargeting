@@ -353,6 +353,53 @@ def _randomize_obj_goal_pose(
     return updated
 
 
+def _apply_task_reset_joint(
+    model: mujoco.MjModel, data: mujoco.MjData, sim: SimulationConfig
+) -> bool:
+    cfg = sim.task_reset_joint
+    if not cfg.enabled:
+        return False
+
+    joint_name = str(cfg.name)
+    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+    if joint_id < 0:
+        logger.warning(f"Task reset joint failed: joint not found '{joint_name}'")
+        return False
+
+    qadr = int(model.jnt_qposadr[joint_id])
+    dadr = int(model.jnt_dofadr[joint_id])
+    joint_type = model.jnt_type[joint_id]
+    if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+        qwidth, dwidth = 7, 6
+    elif joint_type == mujoco.mjtJoint.mjJNT_BALL:
+        qwidth, dwidth = 4, 3
+    else:
+        qwidth, dwidth = 1, 1
+
+    value = np.asarray(cfg.value, dtype=np.float64).reshape(-1)
+    if value.size == 1 and qwidth == 1:
+        value = np.full(qwidth, float(value[0]), dtype=np.float64)
+    if value.size != qwidth:
+        logger.warning(
+            f"Task reset joint failed: joint '{joint_name}' expects {qwidth} qpos value(s), got {value.size}"
+        )
+        return False
+
+    data.qpos[qadr : qadr + qwidth] = value
+    data.qvel[dadr : dadr + dwidth] = 0.0
+    mujoco.mj_forward(model, data)
+    logger.info(f"Task reset joint: {joint_name}={value.round(4).tolist()}")
+    return True
+
+
+def _reset_randomized_env(
+    model: mujoco.MjModel, data: mujoco.MjData, runtime_cfg: RuntimeConfig
+) -> bool:
+    randomized = _randomize_obj_goal_pose(model, data, runtime_cfg)
+    joint_reset = _apply_task_reset_joint(model, data, runtime_cfg.simulation)
+    return randomized or joint_reset
+
+
 def main(
     runtime_config_path: str,
     dataset_dir: str = "data/hdf5",
@@ -389,7 +436,7 @@ def main(
             mujoco.mj_forward(model, data)
             logger.info(f"Loaded startup_keyframe='{kf_name}' (id={kf_id})")
 
-    _randomize_obj_goal_pose(model, data, runtime_cfg)
+    _reset_randomized_env(model, data, runtime_cfg)
 
     controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
     # Mocap id for recording action in wrist_mocap mode only (does not affect control)
@@ -735,7 +782,7 @@ def main(
             if pending_buffers is not None and pending_episode_idx is not None:
                 save_episode(pending_buffers, pending_episode_idx)
             if do_randomize:
-                _randomize_obj_goal_pose(model, data, runtime_cfg)
+                _reset_randomized_env(model, data, runtime_cfg)
 
             _publish_viewer_state(
                 secondary_viewer_queues, _make_viewer_state_snapshot(model, data)
