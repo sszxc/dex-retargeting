@@ -36,14 +36,6 @@ def _default_camera2table() -> List[List[float]]:
     ]
 
 
-def _default_obj_position_ranges() -> List[List[float]]:
-    return [[-0.2, 0.2], [0.5, 0.8], [0.03, 0.03]]
-
-
-def _default_goal_position_ranges() -> List[List[float]]:
-    return [[-0.3, 0.3], [0.5, 0.8], [0.1, 0.3]]
-
-
 @dataclass
 class SensorConfig:
     input_source: str = "webcam"
@@ -150,12 +142,10 @@ class MocapConfig:
 
 
 @dataclass
-class RandomObjGoalConfig:
-    enabled: bool = False
-    obj_body_name: str = "obj"
-    goal_site_name: str = "site"
-    obj_position_ranges: List[List[float]] = field(default_factory=_default_obj_position_ranges)
-    goal_position_ranges: List[List[float]] = field(default_factory=_default_goal_position_ranges)
+class RandomObjGoalTargetConfig:
+    name: str
+    type: str
+    position_ranges: List[List[float]]
 
     @staticmethod
     def _validate_ranges(name: str, ranges: List[List[float]]) -> None:
@@ -170,16 +160,29 @@ class RandomObjGoalConfig:
             raise ValueError(f"{name} has min > max for some axis")
 
     def validate(self) -> None:
-        if not self.obj_body_name.strip():
-            raise ValueError("simulation.random_obj_goal.obj_body_name cannot be empty")
-        if not self.goal_site_name.strip():
-            raise ValueError("simulation.random_obj_goal.goal_site_name cannot be empty")
+        if not str(self.name).strip():
+            raise ValueError("simulation.random_obj_goal[].name cannot be empty")
+        if self.type not in {"body", "site"}:
+            raise ValueError(
+                f"simulation.random_obj_goal[{self.name}].type must be 'body' or 'site'"
+            )
         self._validate_ranges(
-            "simulation.random_obj_goal.obj_position_ranges", self.obj_position_ranges
+            f"simulation.random_obj_goal[{self.name}].position_ranges",
+            self.position_ranges,
         )
-        self._validate_ranges(
-            "simulation.random_obj_goal.goal_position_ranges", self.goal_position_ranges
-        )
+
+
+@dataclass
+class RandomObjGoalConfig:
+    targets: List[RandomObjGoalTargetConfig] = field(default_factory=list)
+
+    @property
+    def enabled(self) -> bool:
+        return len(self.targets) > 0
+
+    def validate(self) -> None:
+        for target in self.targets:
+            target.validate()
 
 
 @dataclass
@@ -401,6 +404,36 @@ def _parse_task_reset_joint(raw: Dict[str, Any]) -> TaskResetJointConfig:
     )
 
 
+def _parse_random_obj_goal(raw: Dict[str, Any]) -> RandomObjGoalConfig:
+    block = raw.get("random_obj_goal")
+    if block is None or block is False:
+        return RandomObjGoalConfig()
+    if not isinstance(block, list):
+        raise ValueError(
+            "simulation.random_obj_goal must be a list of targets, false, or omitted. "
+            "Example: [{name: obj, type: body, position_ranges: [[-0.2,0.2],[0.5,0.8],[0.03,0.03]]}]"
+        )
+
+    targets: List[RandomObjGoalTargetConfig] = []
+    for i, item in enumerate(block):
+        if not isinstance(item, dict):
+            raise ValueError(f"simulation.random_obj_goal[{i}] must be a mapping")
+        if "name" not in item:
+            raise ValueError(f"simulation.random_obj_goal[{i}].name is required")
+        if "type" not in item:
+            raise ValueError(f"simulation.random_obj_goal[{i}].type is required")
+        if "position_ranges" not in item:
+            raise ValueError(f"simulation.random_obj_goal[{i}].position_ranges is required")
+        targets.append(
+            RandomObjGoalTargetConfig(
+                name=str(item["name"]).strip(),
+                type=str(item["type"]).strip(),
+                position_ranges=list(item["position_ranges"]),
+            )
+        )
+    return RandomObjGoalConfig(targets=targets)
+
+
 def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
     mocap_raw = dict(raw.get("mocap", {}))
     mocap = MocapConfig(
@@ -408,20 +441,12 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
         mocap_body_name=mocap_raw.get("mocap_body_name"),
         mocap_id=mocap_raw.get("mocap_id"),
     )
-    random_obj_goal_raw = dict(raw.get("random_obj_goal", {}))
-    random_obj_goal = RandomObjGoalConfig(
-        enabled=bool(random_obj_goal_raw.get("enabled", False)),
-        obj_body_name=str(random_obj_goal_raw.get("obj_body_name", "obj")),
-        goal_site_name=str(random_obj_goal_raw.get("goal_site_name", "site")),
-        obj_position_ranges=list(
-            random_obj_goal_raw.get("obj_position_ranges", _default_obj_position_ranges())
-        ),
-        goal_position_ranges=list(
-            random_obj_goal_raw.get("goal_position_ranges", _default_goal_position_ranges())
-        ),
-    )
+    random_obj_goal = _parse_random_obj_goal(raw)
     assist_raw = dict(raw.get("assist_near_object", {}))
-    default_obj_for_assist = str(random_obj_goal_raw.get("obj_body_name", "obj"))
+    default_obj_for_assist = next(
+        (target.name for target in random_obj_goal.targets if target.type == "body"),
+        "obj",
+    )
     assist_near_object = AssistNearObjectConfig(
         gain=float(assist_raw.get("gain", 0.25)),
         max_step_m=float(assist_raw.get("max_step_m", 0.12)),

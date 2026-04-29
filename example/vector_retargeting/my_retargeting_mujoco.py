@@ -306,50 +306,50 @@ def _randomize_obj_goal_pose(
     if not cfg.enabled:
         return False
 
-    obj_pos = _sample_xyz(cfg.obj_position_ranges)
-    goal_pos = _sample_xyz(cfg.goal_position_ranges)
-
     updated = False
+    randomized: list[str] = []
 
-    obj_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.obj_body_name)
-    if obj_body_id < 0:
-        logger.warning(f"Randomize scene failed: body not found '{cfg.obj_body_name}'")
-    else:
-        body_joint_num = int(model.body_jntnum[obj_body_id])
-        body_joint_adr = int(model.body_jntadr[obj_body_id])
-        if body_joint_num > 0 and body_joint_adr >= 0:
-            joint_id = body_joint_adr
-            joint_type = model.jnt_type[joint_id]
-            if joint_type == mujoco.mjtJoint.mjJNT_FREE:
-                qadr = int(model.jnt_qposadr[joint_id])
-                dadr = int(model.jnt_dofadr[joint_id])
-                data.qpos[qadr : qadr + 3] = obj_pos
-                data.qvel[dadr : dadr + 6] = 0.0
-                updated = True
+    for target in cfg.targets:
+        pos = _sample_xyz(target.position_ranges)
+        if target.type == "body":
+            target_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, target.name)
+            if target_id < 0:
+                logger.warning(f"Randomize scene failed: body not found '{target.name}'")
+                continue
+
+            body_joint_num = int(model.body_jntnum[target_id])
+            body_joint_adr = int(model.body_jntadr[target_id])
+            if body_joint_num > 0 and body_joint_adr >= 0:
+                joint_id = body_joint_adr
+                joint_type = model.jnt_type[joint_id]
+                if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+                    qadr = int(model.jnt_qposadr[joint_id])
+                    dadr = int(model.jnt_dofadr[joint_id])
+                    data.qpos[qadr : qadr + 3] = pos
+                    data.qvel[dadr : dadr + 6] = 0.0
+                else:
+                    logger.warning(
+                        f"body '{target.name}' is not a free joint; writing model.body_pos instead"
+                    )
+                    model.body_pos[target_id] = pos
             else:
-                logger.warning(
-                    f"body '{cfg.obj_body_name}' is not a free joint; writing model.body_pos instead"
-                )
-                model.body_pos[obj_body_id] = obj_pos
-                updated = True
+                model.body_pos[target_id] = pos
+        elif target.type == "site":
+            target_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, target.name)
+            if target_id < 0:
+                logger.warning(f"Randomize scene failed: site not found '{target.name}'")
+                continue
+            model.site_pos[target_id] = pos
         else:
-            model.body_pos[obj_body_id] = obj_pos
-            updated = True
+            logger.warning(f"Randomize scene skipped unsupported type '{target.type}'")
+            continue
 
-    goal_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, cfg.goal_site_name)
-    if goal_site_id < 0:
-        logger.warning(f"Randomize scene failed: site not found '{cfg.goal_site_name}'")
-    else:
-        model.site_pos[goal_site_id] = goal_pos
         updated = True
+        randomized.append(f"{target.name}({target.type})={pos.round(4).tolist()}")
 
     if updated:
         mujoco.mj_forward(model, data)
-        logger.info(
-            "Randomized obj/goal: "
-            f"{cfg.obj_body_name}={obj_pos.round(4).tolist()}, "
-            f"{cfg.goal_site_name}={goal_pos.round(4).tolist()}"
-        )
+        logger.info(f"Randomized targets: {', '.join(randomized)}")
     return updated
 
 

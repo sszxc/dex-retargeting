@@ -24,20 +24,19 @@ retargeting:
 
 simulation:
   mj_xml_path: /home/lab/Documents/teleop_scene_left_077_rubiks_cube
-  random_obj_goal:
-    enabled: false
-    obj_body_name: obj
-    goal_site_name: site
-    obj_position_ranges: [[-0.2, 0.2], [0.5, 0.8], [0.03, 0.03]]
-    goal_position_ranges: [[-0.3, 0.3], [0.5, 0.8], [0.1, 0.3]]
+  random_obj_goal: []
+  # random_obj_goal:
+  #   - name: obj
+  #     type: body
+  #     position_ranges: [[-0.2, 0.2], [0.5, 0.8], [0.03, 0.03]]
+  #   - name: site
+  #     type: site
+  #     position_ranges: [[-0.3, 0.3], [0.5, 0.8], [0.1, 0.3]]
   control_hand: left
   root_ctrl_indices: [0, 1, 2, 3, 4, 5]
   finger_ctrl_indices: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
   root_position_offset: [0.2, 0.0, -0.6]
-  wrist_rotation_calib_matrix:
-    - [1.0, 0.0, 0.0]
-    - [0.0, 1.0, 0.0]
-    - [0.0, 0.0, 1.0]
+  wrist_rotation_offset_rpy: [0.0, 0.0, 0.0]
   joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
   camera_names: []
   control_rate_hz: 60.0
