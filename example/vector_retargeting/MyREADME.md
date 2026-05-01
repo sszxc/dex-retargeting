@@ -1,153 +1,254 @@
-## `my_retargeting_mujoco.py` user guide
-
-This directory provides a full demo: **real-time detection → retargeting → MuJoCo visualization / recording**. After refactoring, the goals are: **config-driven** setup, **subprocesses** to separate detection from retargeting, **main thread** dedicated to simulation and recording, and support for three input sources: `webcam / leap_motion / test_sine`.
-
----
-
-### 1. Feature overview
-
-- **Input (sensor)**:
-  - `webcam`: MediaPipe single-hand tracking (left/right configurable; bimanual mode can run two detectors in parallel)
-  - `leap_motion`: Leap SDK (left/right configurable)
-  - `test_sine`: no camera; generates test joint trajectories with a sine sweep (to validate the MuJoCo control path)
-- **Retargeting**:
-  - Optimizer types: `vector / position / dexpilot / joint`
-  - Single hand (`single_left` / `single_right`) and bimanual (`bimanual`)
-  - `add_dummy_free_joint` (whether to add a 6-DoF dummy joint at the URDF root)
-- **Simulation & recording**:
-  - Launches the MuJoCo viewer and writes `data.ctrl` at a fixed control rate
-  - Can record episodes (HDF5: `qpos` / `qvel` / `action` / `images`)
-  - With `wrist_mocap=True`: wrist uses `data.mocap_pos` / `mocap_quat`; fingers still use `data.ctrl`
-- **Optional visualization (Rerun)**:
-  - If `rerun_enabled=true`, logs hand keypoints and robot joint positions (debug only; not on the main path)
-
----
-
-### 2. Code layout (module roles)
-
-- `my_retargeting_mujoco.py`  
-  Loads config, spawns child processes, main-thread MuJoCo loop, keyboard handling, recording state machine
-- `runtime_config.py`  
-  New schema: load and validate (supports `left` / `right` only)
-- `input_sources.py`  
-  Input abstractions: `WebcamInputSource`, `LeapInputSource`, `generate_sine_test_qpos`
-- `retarget_worker.py`  
-  Child process: init retargeters (one per hand as configured), capture / detect / retarget, write queue messages
-- `mujoco_control.py`  
-  Main thread: map queue messages to MuJoCo (root / finger `ctrl`, or mocap)
-
----
-
-### 3. Flow (processes and data)
+## `my_retargeting_mujoco.py` User Guide
 
 ```mermaid
 flowchart TD
-    cfg[LoadRuntimeConfig] -->|spawn| worker[RetargetWorkerProcess]
-    cfg --> main[MuJoCoMainThread]
+    subgraph W[Worker Process]
+        A[Hand Sensor Input<br/>webcam / leap_motion / test_sine]
+        B[Retargeting Optimizer<br/>vector / position / dexpilot / joint]
+        C[Queue Message<br/>]
+        Q[(multiprocessing.Queue maxsize=4<br/>newest-state semantics)]
+        A --human hand pose--> B --robot hand pose--> C --hand_qpos / wrist / keypoint --> Q
+    end
 
-    worker -->|Queue msg| q[(multiprocessing.Queue)]
-    q --> main
+    subgraph M[Main Process]
+        I[Load Runtime Config and Init MuJoCo]
+        L[Main Loop<br/>consume latest queue message<br/>at control_rate_hz]
+        P[Apply Control to MuJoCo]
+        V[MuJoCo Simulation + Primary Viewer]
+        S[Secondary Viewer Processes]
+        R[Optional Rerun Debug Stream]
+        I --> L --> P --> V
+        V --> S
+        L -.optional.-> R
+    end
 
-    main --> loop[ViewerLoop]
-    loop -->|every control tick| apply[MujocoHandController.apply]
-    apply --> branch{wrist_mocap?}
-    branch -->|true| mocap[Write data.mocap_pos/quat]
-    branch -->|false| rootctrl[Write root ctrl]
-    apply --> fingerctrl[Write finger ctrl]
-    loop --> rec[Record episode to HDF5]
+    Q -- newest message --> L
+
+    subgraph K[Keyboard Events]
+        K1[s: start recording]
+        K2[e: stop and save episode]
+        K3[r: randomize scene + discard unsaved buffer]
+        K4[space: assist_near_object<br/>nudge root_position_offset]
+        K5[q: quit]
+    end
+    K --> L
+
+    subgraph D[HDF5 Recording]
+        D1["/observations/qpos"]
+        D2["/observations/qvel"]
+        D3["/action"]
+        D4["/observations/images/<camera>"]
+    end
+    V -.optional.-> D
 ```
 
----
-
-### 4. Child-process queue message (dict contract)
-
-Each frame the child emits one dict. **Keys are always present in full** (hands that were not detected are filled with `None`):
-
-- `hand_left_qpos`: `np.ndarray`, full robot hand joint vector (root + finger; often 22-D)
-- `wrist_left_pos`: `np.ndarray(3,)`, wrist position (if the source provides it)
-- `wrist_left_quat`: `np.ndarray(4,)`, `wxyz` quaternion (from the wrist rotation matrix)
-- `hand_right_qpos` / `wrist_right_pos` / `wrist_right_quat`
-
-Notes:
-
-- `simulation.control_hand` selects which `hand_*_qpos` drives the current MuJoCo scene (in bimanual mode the message has both; the control side can still use one for now).
+This demo runs a full loop:
+**real-time sensing -> retargeting -> MuJoCo control/viewing -> optional HDF5 recording**.
 
 ---
 
-### 5. How to run, interact, and record
+### 1. What this script does
 
-#### 5.1 Launch
+- **Input sources (`sensor.input_source`)**
+  - `webcam`: MediaPipe hand tracking
+  - `leap_motion`: Leap SDK hand tracking
+  - `test_sine`: no camera, generates sine-sweep test qpos
+- **Retargeting**
+  - Modes: `single_left | single_right | bimanual`
+  - Optimizers: `vector | position | dexpilot | joint` (`dex` is accepted and mapped to `dexpilot`)
+- **Control output**
+  - Finger controls always written into `data.ctrl[finger_ctrl_indices]`
+  - Wrist/root can be controlled by mocap (`mocap.wrist_mocap=true`) or by root ctrl indices
+- **Recording**
+  - Save episodes to HDF5 (`qpos`, `qvel`, `action`, camera images)
+- **Visualization**
+  - MuJoCo passive viewer (by default, launches two viewers for stereoscopic vision; number controlled via `--viewer-count`)
+  - Optional Rerun debug stream (`sensor.rerun_enabled=true`)
+
+---
+
+### 2. Runtime architecture
+
+1. Main process:
+   - loads runtime YAML
+   - starts MuJoCo model + viewer(s)
+   - applies control at `simulation.control_rate_hz`
+   - handles keyboard events + recording
+2. Worker process (`retarget_worker.py`):
+   - polls sensor
+   - retargets active hands
+   - writes a latest-state dict into `multiprocessing.Queue`
+3. Main loop consumes the newest queue message and applies control through `MujocoHandController.apply`.
+
+---
+
+### 3. Queue message contract from worker
+
+The worker always emits a dict with fixed keys; missing hand observations are `None`.
+
+- Left side:
+  - `hand_left_qpos`
+  - `wrist_left_pos`
+  - `wrist_left_quat` (`wxyz`)
+  - `wrist_left_rot` (`3x3` rotation matrix)
+  - `keypoint_left_3d` (`21x3` if available)
+- Right side:
+  - `hand_right_qpos`
+  - `wrist_right_pos`
+  - `wrist_right_quat`
+  - `wrist_right_rot`
+  - `keypoint_right_3d`
+
+`simulation.control_hand` (`left` or `right`) decides which side is applied to MuJoCo control.
+
+---
+
+### 4. How to run
+
+#### 4.1 Basic launch
 
 ```bash
 python example/vector_retargeting/my_retargeting_mujoco.py --runtime-config-path example/vector_retargeting/runtime_config_example.yml
-
-python example/vector_retargeting/my_retargeting_mujoco.py --runtime-config-path src/dex_retargeting/configs/my/teleop_absolute_pose_allegro_hand_left_joint_runtime.yml
 ```
 
-#### 5.2 Keyboard
+For honda hand project:
+```bash
+python example/vector_retargeting/my_retargeting_mujoco.py --runtime-config-path src/dex_retargeting/configs/my/teleop_hmf_hand_proto5_release_right_ur7e_joint.yml --dataset-dir data/sim_hmf_proto5_teleop/basketball
+```
 
-- **`s`**: start recording an episode
-- **`e`**: end recording and save HDF5
-- **`q`**: quit
-- **`r`**: resample object & goal at random positions
-- **space**: move assist
+#### 4.2 Useful CLI flags (from `tyro.cli(main)`)
 
-#### 5.3 HDF5 output
+- `--runtime-config-path`: runtime YAML path
+- `--dataset-dir`: episode output root (default `data/hdf5`)
+- `--viewer-count`: number of passive viewer processes (default `2`)
 
-Episodes are saved under a timestamped directory inside `--dataset-dir`, including:
+#### 4.3 Keyboard controls
 
-- `/observations/qpos`
-- `/observations/qvel`
-- `/action`
-- `/observations/images/<camera_name>` (if the scene has cameras, or fallback `default`)
+- `s` (or `--start-key`): start recording current episode
+- `e` (or `--stop-key`): stop and save episode
+- `r`: randomize object/goal (and discard unsaved current episode buffer)
+- `space`: apply assist move (nudges `root_position_offset` toward object when control hand is detected)
+- `q`: quit
 
 ---
 
-### 6. Writing a new config (schema + example)
+### 5. Recording output format
 
-The config has three top-level blocks: `sensor`, `retargeting`, `simulation`. See `runtime_config_example.yml` for a full example.
+Each run creates a timestamp folder under `--dataset-dir` and writes:
+
+- `command.txt`: launch command snapshot
+- `episode_<idx>.hdf5`
+  - `/observations/qpos`
+  - `/observations/qvel`
+  - `/action`
+  - `/observations/images/<camera_name>`
+
+Notes:
+
+- If XML defines cameras, they are used (or filtered by `simulation.camera_names`).
+- If XML has no camera, script records one fallback camera named `default`.
+- In `wrist_mocap=true` mode, `/action` is `[mocap_pos(3), mocap_quat(4), ctrl(...)]`; otherwise `/action` is `ctrl`.
+- If `simulation.joint_indices` is set, recorded qpos/qvel are sliced by those indices.
+
+---
+
+### 6. Runtime config reference (actual current schema)
+
+Top-level blocks:
+
+```yaml
+sensor:
+retargeting:
+simulation:
+```
 
 #### 6.1 `sensor`
 
-Key fields:
-
 - `input_source`: `webcam | leap_motion | test_sine`
-- `webcam.index`: OpenCV camera index (only for `webcam`)
-- `camera2table`: 3×3 rotation to map detected point clouds from camera frame to table / world (legacy `CAMERA2TABLE` lives here now)
-- `rerun_enabled`: enable Rerun (recommended default `false`)
+- `webcam.index`: camera index (used when `webcam`)
+- `camera2table`: required `3x3` transform matrix
+- `rerun_enabled`: enable Rerun debug logging
 
 #### 6.2 `retargeting`
 
-`left` / `right` layout: as in `src/dex_retargeting/configs/my/*_runtime.yml`.
+- `mode`: `single_left | single_right | bimanual`
+- Active hand config must include:
+  - `urdf_path`
+  - `optimizer`
+- `optimizer` can be:
+  - string form: `optimizer: vector`
+  - dict form:
+
+```yaml
+optimizer:
+  type: vector
+  params:
+    ...
+```
+
+Minimal structure:
 
 ```yaml
 retargeting:
   mode: single_left
-  left: { urdf_path: ..., add_dummy_free_joint: ..., optimizer: ... }
+  left:
+    urdf_path: "..."
+    add_dummy_free_joint: true
+    optimizer:
+      type: vector
+      params: {}
   right: {}
 ```
 
 #### 6.3 `simulation`
 
-Key fields:
+Core:
 
-- `mj_xml_path`: MuJoCo scene XML file or directory (if a directory, the first `.xml` is used)
-- `control_hand`: `left | right` (which hand from the message drives the scene)
-- `root_ctrl_indices`: six `ctrl` indices (root 6-DoF actuators)
-- `finger_ctrl_indices`: sixteen `ctrl` indices (finger actuator order)
-- `root_position_offset`: root position bias (for frame alignment)
-- `wrist_rotation_calib_matrix`: 3×3 left-multiply calibration on wrist rotation, `R_out = R_cal @ R_wrist` (optional; default identity). Deprecated `root_rotation_offset_euler_zyx` is still accepted and is converted to a ZYX fixed-axis matrix
-- `control_rate_hz`: control write rate
-- `mocap.wrist_mocap`: use mocap for the wrist
-- `mocap.mocap_body_name` or `mocap.mocap_id`: mocap target
+- `mj_xml_path`: XML file path or directory (if directory, first `*.xml` is used)
+- `startup_keyframe`: optional MJCF keyframe name loaded at startup
+- `control_hand`: `left | right`
+- `root_ctrl_indices`: length must be `6`
+- `finger_ctrl_indices`: non-empty list
+- `root_position_offset`: length `3`
+- `wrist_rotation_offset_rpy`: optional `[roll, pitch, yaw]` in radians
+  - parsed as fixed-axis `R = Rz(yaw) @ Ry(pitch) @ Rx(roll)`
+- `control_rate_hz`: must be `> 0`
+- `joint_indices`: optional qpos/qvel indices for recording
+- `camera_names`: optional camera whitelist for recording
+
+Mocap:
+
+- `mocap.wrist_mocap`: bool
+- `mocap.mocap_body_name` or `mocap.mocap_id`
+
+Reset/randomization/assist:
+
+- `random_obj_goal`: list of targets
+  - each target: `{name, type: body|site, position_ranges: [[xmin,xmax],[ymin,ymax],[zmin,zmax]]}`
+- `task_reset_joint`: `{enabled, name, value}`
+- `assist_near_object`:
+  - `gain`
+  - `max_step_m`
+  - `palm_body_name`
+  - `obj_body_name`
+  - `preset_offset_xyz`
+
+Viewer:
+
+- `viewer_camera` (optional): `lookat`, `azimuth`, `elevation`, `distance`
+
+Important compatibility note:
+
+- `simulation.wrist_rotation_calib_matrix` and `simulation.root_rotation_offset_euler_zyx` are **rejected** by current parser.
+- Use `simulation.wrist_rotation_offset_rpy` instead.
 
 ---
 
-### 7. Retargeting (optimizer) configs
+### 7. Optimizer snippets
 
-Below only the `retargeting.*.optimizer` parts are shown (other fields omitted).
+Only optimizer blocks are shown below.
 
-#### 7.1 Vector (relative vectors)
+#### 7.1 Vector
 
 ```yaml
 optimizer:
@@ -160,7 +261,7 @@ optimizer:
     low_pass_alpha: 0.2
 ```
 
-#### 7.2 Position (absolute positions)
+#### 7.2 Position
 
 ```yaml
 optimizer:
@@ -185,7 +286,7 @@ optimizer:
     low_pass_alpha: 0.2
 ```
 
-#### 7.4 Joint (direct joint optimization)
+#### 7.4 Joint
 
 ```yaml
 optimizer:
@@ -196,9 +297,8 @@ optimizer:
 
 ---
 
-### 8. Common pitfalls and troubleshooting
+### 8. Troubleshooting
 
-- **Missing fields**: each active hand should have `urdf_path` and `optimizer` (the unused hand can be `{}`, but validation depends on mode and active hand).
-- **`wrist_mocap=True` but wrist does not move**: set `mocap_body_name` correctly (body must be a mocap body) or set `mocap_id` directly.
-- **Right-hand vector / DexPilot link order**: right-hand tip link order often differs from the left; your old configs already reflect that; migration keeps them as-is.
-- **Drift from inconsistent `camera2table`**: set it once under `sensor.camera2table` instead of hard-coding different versions inside the detector.
+- Active hand missing `urdf_path` or `optimizer` -> config validation fails.
+- `wrist_mocap=true` but wrist not moving -> check mocap body exists and is a mocap body, or set valid `mocap_id`.
+- `space` assist appears ineffective -> ensure `assist_near_object` body names match MuJoCo body names and control hand is currently detected.
