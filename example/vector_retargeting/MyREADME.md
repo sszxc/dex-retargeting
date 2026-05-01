@@ -45,6 +45,8 @@ flowchart TD
 This demo runs a full loop:
 **real-time sensing -> retargeting -> MuJoCo control/viewing -> optional HDF5 recording**.
 
+TL;DR: `python example/vector_retargeting/my_retargeting_mujoco.py --runtime-config-path src/dex_retargeting/configs/my/teleop_hmf_hand_proto5_release_right_ur7e_joint.yml --dataset-dir path/to/dateset/output`
+
 ---
 
 ### 1. What this script does
