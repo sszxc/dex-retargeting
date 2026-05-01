@@ -762,7 +762,18 @@ def main(
             pending_episode_idx = None
             do_randomize = False
             with keyboard_lock:
-                if record_start_requested:
+                if randomize_requested:
+                    if episode_buffers is not None:
+                        logger.info(
+                            f"Reset requested; discarded unsaved episode_{episode_idx}"
+                        )
+                    episode_buffers = None
+                    is_recording = False
+                    record_start_requested = False
+                    record_stop_requested = False
+                    do_randomize = True
+                    randomize_requested = False
+                elif record_start_requested:
                     episode_buffers = init_episode_buffers()
                     is_recording = True
                     record_start_requested = False
@@ -775,10 +786,6 @@ def main(
                         episode_buffers = None
                     is_recording = False
                     record_stop_requested = False
-                if randomize_requested:
-                    do_randomize = True
-                    randomize_requested = False
-
             if pending_buffers is not None and pending_episode_idx is not None:
                 save_episode(pending_buffers, pending_episode_idx)
             if do_randomize:
