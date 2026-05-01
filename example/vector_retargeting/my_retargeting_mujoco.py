@@ -439,6 +439,9 @@ def main(
     _reset_randomized_env(model, data, runtime_cfg)
 
     controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
+    initial_root_position_offset = np.asarray(
+        runtime_cfg.simulation.root_position_offset, dtype=np.float64
+    ).reshape(3).copy()
     # Mocap id for recording action in wrist_mocap mode only (does not affect control)
     mocap_id_for_action: Optional[int] = None
     if runtime_cfg.simulation.mocap.wrist_mocap:
@@ -771,6 +774,10 @@ def main(
                     is_recording = False
                     record_start_requested = False
                     record_stop_requested = False
+                    assist_near_object_pending = False
+                    runtime_cfg.simulation.root_position_offset[0] = float(initial_root_position_offset[0])
+                    runtime_cfg.simulation.root_position_offset[1] = float(initial_root_position_offset[1])
+                    runtime_cfg.simulation.root_position_offset[2] = float(initial_root_position_offset[2])
                     do_randomize = True
                     randomize_requested = False
                 elif record_start_requested:
