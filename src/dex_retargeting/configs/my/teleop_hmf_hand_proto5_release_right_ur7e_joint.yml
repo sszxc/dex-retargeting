@@ -164,3 +164,7 @@ simulation:
     palm_body_name: RHand_PALM_LINK
     obj_body_name: ball
     preset_offset_xyz: [0.0, -0.15, 0.1]
+  socket_publish:
+    enabled: true
+    host: 127.0.0.1
+    port: 6001

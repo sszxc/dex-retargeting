@@ -236,6 +236,27 @@ class PassiveViewerCameraConfig:
 
 
 @dataclass
+class SocketPublishConfig:
+    """UDP JSON broadcast of the control_hand's wrist pose + finger joint angles.
+
+    One JSON datagram per control tick (see my_retargeting_mujoco.py); subscribers
+    only need stdlib `socket` + `json`, so they can run in a different environment.
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 6001
+
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        if not str(self.host).strip():
+            raise ValueError("simulation.socket_publish.host cannot be empty")
+        if not (0 < self.port < 65536):
+            raise ValueError("simulation.socket_publish.port must be in (0, 65536)")
+
+
+@dataclass
 class AssistNearObjectConfig:
     """Space key: nudge root_position_offset along (obj - palm) to help teleop reach the object."""
 
@@ -283,6 +304,7 @@ class SimulationConfig:
     task_reset_joint: TaskResetJointConfig = field(default_factory=TaskResetJointConfig)
     assist_near_object: AssistNearObjectConfig = field(default_factory=AssistNearObjectConfig)
     viewer_camera: Optional[PassiveViewerCameraConfig] = None
+    socket_publish: SocketPublishConfig = field(default_factory=SocketPublishConfig)
 
     def validate(self) -> None:
         if self.control_hand not in {"left", "right"}:
@@ -308,6 +330,7 @@ class SimulationConfig:
         self.assist_near_object.validate()
         if self.viewer_camera is not None:
             self.viewer_camera.validate()
+        self.socket_publish.validate()
 
 
 @dataclass
@@ -434,6 +457,15 @@ def _parse_random_obj_goal(raw: Dict[str, Any]) -> RandomObjGoalConfig:
     return RandomObjGoalConfig(targets=targets)
 
 
+def _parse_socket_publish(raw: Dict[str, Any]) -> SocketPublishConfig:
+    block = dict(raw.get("socket_publish", {}))
+    return SocketPublishConfig(
+        enabled=bool(block.get("enabled", False)),
+        host=str(block.get("host", "127.0.0.1")),
+        port=int(block.get("port", 6001)),
+    )
+
+
 def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
     mocap_raw = dict(raw.get("mocap", {}))
     mocap = MocapConfig(
@@ -479,6 +511,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
         task_reset_joint=_parse_task_reset_joint(raw),
         assist_near_object=assist_near_object,
         viewer_camera=_parse_passive_viewer_camera(raw),
+        socket_publish=_parse_socket_publish(raw),
     )
 
 

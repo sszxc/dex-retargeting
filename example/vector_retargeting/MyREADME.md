@@ -239,6 +239,11 @@ Viewer:
 
 - `viewer_camera` (optional): `lookat`, `azimuth`, `elevation`, `distance`
 
+Socket publish (see section 8):
+
+- `socket_publish.enabled`: bool, default `false`
+- `socket_publish.host` / `socket_publish.port`: UDP destination, default `127.0.0.1:6001`
+
 Important compatibility note:
 
 - `simulation.wrist_rotation_calib_matrix` and `simulation.root_rotation_offset_euler_zyx` are **rejected** by current parser.
@@ -299,7 +304,83 @@ optimizer:
 
 ---
 
-### 8. Troubleshooting
+### 8. Live UDP state publishing (wrist pose + finger joint angles)
+
+When `simulation.socket_publish.enabled: true`, the main loop broadcasts one UDP/JSON
+datagram per control tick (`control_rate_hz`, e.g. 60 Hz) with the `control_hand`'s
+**actual simulated** state -- same values used for HDF5 recording, not the raw
+pre-physics retargeting command:
+
+- wrist pose: `data.mocap_pos` / `data.mocap_quat` (post `root_position_offset` /
+  `wrist_rotation_offset_rpy` calibration)
+- finger joint angles: `data.qpos` (post-physics), read via `finger_ctrl_indices`
+
+Payload schema (one JSON object per datagram):
+
+```json
+{
+  "t": 1735000000.123,
+  "sim_time": 12.345,
+  "hand": "right",
+  "wrist_pos": [x, y, z],
+  "wrist_quat_wxyz": [w, x, y, z],
+  "joint_names": ["RHand_I1Z_joint", "...", "RHand_T3Y_joint"],
+  "joint_angles": [/* radians, same order as joint_names */]
+}
+```
+
+Config:
+
+```yaml
+simulation:
+  socket_publish:
+    enabled: true
+    host: 127.0.0.1
+    port: 6001
+```
+
+Subscribing (any environment, stdlib only -- no dex_retargeting/mujoco/numpy needed):
+
+```bash
+python example/vector_retargeting/state_subscriber_example.py --port 6001
+```
+
+#### 8.1 Reading from another machine on the LAN
+
+UDP `sendto` targets whatever address is in `socket_publish.host` -- `127.0.0.1` never
+leaves the publishing machine, so cross-machine needs two changes:
+
+1. **Point the publisher at the receiving machine.** On the publishing machine, find
+   the receiving machine's LAN IP (e.g. `hostname -I` / `ip addr` on Linux,
+   `ipconfig` on Windows), then set it in the yml:
+
+   ```yaml
+   simulation:
+     socket_publish:
+       enabled: true
+       host: 192.168.1.50   # the *receiving* machine's LAN IP, not the publisher's
+       port: 6001
+   ```
+
+   To reach *every* machine on the subnet without hardcoding one IP, set `host` to
+   the subnet's broadcast address instead (e.g. `192.168.1.255`, or `255.255.255.255`
+   for the limited broadcast) -- the publisher socket already has `SO_BROADCAST`
+   enabled, so this works out of the box.
+
+2. **Open the port on the receiving machine.** `state_subscriber_example.py` binds to
+   `0.0.0.0:<port>` by default (all interfaces, so it works whether the sender is
+   local or remote) -- but the OS firewall on the receiving machine must still allow
+   inbound UDP on that port, e.g. on Ubuntu: `sudo ufw allow 6001/udp`.
+
+Then run the subscriber as usual on the receiving machine:
+
+```bash
+python state_subscriber_example.py --port 6001
+```
+
+---
+
+### 9. Troubleshooting
 
 - Active hand missing `urdf_path` or `optimizer` -> config validation fails.
 - `wrist_mocap=true` but wrist not moving -> check mocap body exists and is a mocap body, or set valid `mocap_id`.

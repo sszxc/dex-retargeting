@@ -16,9 +16,10 @@ import tyro
 from loguru import logger
 from pynput import keyboard
 
-from mujoco_control import MujocoHandController
+from mujoco_control import MujocoHandController, read_finger_qpos
 from retarget_worker import run_retarget_worker
 from runtime_config import RuntimeConfig, SimulationConfig, load_runtime_config
+from state_publisher import HandStatePublisher
 
 
 DEFAULT_LOOKAT = [0.0, 0.0, 0.2]
@@ -450,6 +451,17 @@ def main(
         except Exception as err:
             logger.warning(f"Failed to parse mocap_id (action will omit mocap pose): {err}")
 
+    state_publisher: Optional[HandStatePublisher] = None
+    if runtime_cfg.simulation.socket_publish.enabled:
+        state_publisher = HandStatePublisher(
+            host=runtime_cfg.simulation.socket_publish.host,
+            port=runtime_cfg.simulation.socket_publish.port,
+        )
+        logger.info(
+            f"State publisher enabled: udp://{runtime_cfg.simulation.socket_publish.host}"
+            f":{runtime_cfg.simulation.socket_publish.port}"
+        )
+
     recording_camera_specs, recording_camera_names = _setup_recording_cameras(
         model, runtime_cfg.simulation.camera_names
     )
@@ -647,6 +659,21 @@ def main(
                             assist_near_object_pending = False
                 controller.apply(data, latest_msg)
 
+                if state_publisher is not None and mocap_id_for_action is not None:
+                    ch = runtime_cfg.simulation.control_hand
+                    joint_names = getattr(runtime_cfg.retargeting, ch).get("target_joint_names") or []
+                    if joint_names:
+                        state_publisher.publish(
+                            hand=ch,
+                            sim_time=data.time,
+                            wrist_pos=np.asarray(data.mocap_pos[mocap_id_for_action]).reshape(3),
+                            wrist_quat_wxyz=np.asarray(data.mocap_quat[mocap_id_for_action]).reshape(4),
+                            joint_names=joint_names,
+                            joint_angles=read_finger_qpos(
+                                model, data, runtime_cfg.simulation.finger_ctrl_indices
+                            ),
+                        )
+
                 if rr is not None and board is not None:
                     try:
                         for hand in runtime_cfg.retargeting.active_hands():
@@ -816,6 +843,12 @@ def main(
             if worker.is_alive():
                 worker.terminate()
                 worker.join()
+        except Exception:
+            pass
+
+        try:
+            if state_publisher is not None:
+                state_publisher.close()
         except Exception:
             pass
 

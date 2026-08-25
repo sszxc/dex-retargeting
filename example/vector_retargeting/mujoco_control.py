@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 import time
 
 import mujoco
@@ -38,6 +38,20 @@ def _quat_wxyz_to_euler_zyx(quat: np.ndarray) -> np.ndarray:
     cosy_cosp = 1 - 2 * (qy * qy + qz * qz)
     rz = np.arctan2(siny_cosp, cosy_cosp)
     return np.array([rz, ry, rx], dtype=np.float64)
+
+
+def read_finger_qpos(
+    model: mujoco.MjModel, data: mujoco.MjData, ctrl_indices: List[int]
+) -> np.ndarray:
+    """Read the actual, physically-simulated joint angle (data.qpos) driven by each
+    actuator index, in ctrl_indices order. Same actuator->joint lookup pattern as the
+    control-tracking diagnostic below, factored out for reuse (e.g. state publishing)."""
+    values = []
+    for act_idx in ctrl_indices:
+        jnt_id = int(model.actuator_trnid[int(act_idx), 0])
+        qadr = int(model.jnt_qposadr[jnt_id])
+        values.append(float(data.qpos[qadr]))
+    return np.asarray(values, dtype=np.float64)
 
 
 @dataclass
