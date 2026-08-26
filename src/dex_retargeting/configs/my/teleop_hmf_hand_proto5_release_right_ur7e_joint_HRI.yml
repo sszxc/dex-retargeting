@@ -1,0 +1,176 @@
+sensor:
+  input_source: leap_motion
+  webcam:
+    index: 0
+  camera2table:
+  - - 1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - -1.0
+  - - 0.0
+    - 1.0
+    - 0.0
+  rerun_enabled: false
+retargeting:
+  mode: single_right
+  right:
+    urdf_path: /home/asu/Documents/GitHub/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e.urdf
+    add_dummy_free_joint: true
+    target_joint_names:
+    - RHand_I1Z_joint
+    - RHand_I1Y_joint
+    - RHand_I2Y_joint
+    - RHand_I3Y_joint
+    - RHand_M1Z_joint
+    - RHand_M1Y_joint
+    - RHand_M2Y_joint
+    - RHand_M3Y_joint
+    - RHand_R1Z_joint
+    - RHand_R1Y_joint
+    - RHand_R2Y_joint
+    - RHand_R3Y_joint
+    - RHand_T1Z_joint
+    - RHand_T1Y_joint
+    - RHand_T2Y_joint
+    - RHand_T3Y_joint
+    optimizer:
+      type: joint
+      params:
+        low_pass_alpha: 1
+  left: {}
+simulation:
+  # ------- task: pick_place_v3 -------
+  # mj_xml_path: /home/asu/Documents/GitHub/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_pick_place_v3.xml
+  # startup_keyframe: home
+  # random_obj_goal:
+  #   - name: obj
+  #     type: body
+  #     position_ranges:
+  #     - [-0.2, 0.2]
+  #     - [0.5, 0.8]
+  #     - [0.66, 0.66]
+  #   - name: goal
+  #     type: site
+  #     position_ranges:
+  #     - [-0.3, 0.3]
+  #     - [0.5, 0.8]
+  #     - [0.7, 0.9]
+  # ------- task: drawer -------
+  # mj_xml_path: /home/asu/Documents/GitHub/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_drawer.xml
+  # startup_keyframe: home
+  # random_obj_goal:
+  #   - name: drawer
+  #     type: body
+  #     position_ranges:
+  #     - [-0.2, 0.2]
+  #     - [0.8, 1.0]
+  #     - [0.6, 0.6]
+  #   - name: goal
+  #     type: site
+  #     position_ranges:
+  #     - [-0.3, 0.3]
+  #     - [0.5, 0.8]
+  #     - [0.7, 0.9]
+  # task_reset_joint:
+  #   enabled: true
+  #   name: goal_slidey
+  #   value: 0.0
+  # ------- task: basketball -------
+  # mj_xml_path: /home/asu/Documents/GitHub/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_basketball.xml
+  # startup_keyframe: home
+  # random_obj_goal:
+  #   - name: ball
+  #     type: body
+  #     position_ranges:
+  #     - [-0.2, 0.2]
+  #     - [0.5, 0.7]
+  #     - [0.6, 0.6]
+  #   - name: goal
+  #     type: body
+  #     position_ranges:
+  #     - [-0.3, 0.3]
+  #     - [0.7, 0.8]
+  #     - [0.6, 0.6]
+  # ------- task: empty -------
+  mj_xml_path: /home/asu/Documents/GitHub/Honda_proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_empty.xml
+  startup_keyframe: home
+  # ------- task end -------
+  control_hand: right
+  root_ctrl_indices:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  finger_ctrl_indices:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 15
+  root_position_offset: [0.0, 0.6, 0.55]
+  # World-frame AABB after offset; omit both to disable clipping.
+  wrist_pos_min: [-0.57, 0.45, 0.85]
+  wrist_pos_max: [0.57, 1.2, 1.4]
+  wrist_rotation_offset_rpy: [1.57, 0, -2.5]
+  joint_indices:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 15
+  - 16
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+  - 22
+  - 23
+  camera_names: [topview, corner]
+  # Passive MuJoCo viewer (launch_passive); omit viewer_camera to keep viewer defaults.
+  viewer_camera:
+    lookat: [0.0, 0.6, 0.6]
+    azimuth: 30
+    elevation: -30
+    distance: 2.0
+  control_rate_hz: 60.0
+  mocap:
+    wrist_mocap: true
+    mocap_body_name: mocap
+    mocap_id: null
+  assist_near_object:
+    gain: 0.02
+    max_step_m: 0.12
+    palm_body_name: RHand_PALM_LINK
+    obj_body_name: ball
+    preset_offset_xyz: [0.0, -0.15, 0.1]
+  socket_publish:
+    enabled: true
+    host: 127.0.0.1
+    port: 6001
