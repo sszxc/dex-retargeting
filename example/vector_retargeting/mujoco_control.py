@@ -83,6 +83,17 @@ class MujocoHandController:
         self._resolved_mocap_id = mocap_id
         return mocap_id
 
+    def _clip_wrist_pos(self, pos: np.ndarray) -> np.ndarray:
+        lo = self.simulation.wrist_pos_min
+        hi = self.simulation.wrist_pos_max
+        if lo is None or hi is None:
+            return pos
+        return np.clip(
+            np.asarray(pos, dtype=np.float64).reshape(3),
+            np.asarray(lo, dtype=np.float64).reshape(3),
+            np.asarray(hi, dtype=np.float64).reshape(3),
+        )
+
     def apply(self, data: mujoco.MjData, msg: dict) -> None:
         hand = self.simulation.control_hand
         qpos = msg.get(f"hand_{hand}_qpos")
@@ -150,7 +161,7 @@ class MujocoHandController:
                 self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
             ).reshape(3, 3)
             if wrist_pos is not None:
-                data.mocap_pos[mocap_id] = (
+                data.mocap_pos[mocap_id] = self._clip_wrist_pos(
                     np.asarray(wrist_pos, dtype=np.float64) + pos_off
                 )
             if wrist_quat is not None:
@@ -161,7 +172,9 @@ class MujocoHandController:
 
         if q.shape[0] >= 6:
             root = q[:6].copy()
-            root[:3] += np.asarray(self.simulation.root_position_offset, dtype=np.float64)
+            root[:3] = self._clip_wrist_pos(
+                root[:3] + np.asarray(self.simulation.root_position_offset, dtype=np.float64)
+            )
             for local_i, ctrl_idx in enumerate(self.simulation.root_ctrl_indices[:3]):
                 data.ctrl[int(ctrl_idx)] = root[local_i]
             for local_i, ctrl_idx in enumerate(self.simulation.root_ctrl_indices[3:6], start=3):

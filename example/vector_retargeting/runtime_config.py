@@ -294,6 +294,9 @@ class SimulationConfig:
         default_factory=lambda: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
     )
     root_position_offset: List[float] = field(default_factory=lambda: [0.2, 0.0, -0.6])
+    # World-frame AABB for wrist target after root_position_offset. Both None = no clip.
+    wrist_pos_min: Optional[List[float]] = None
+    wrist_pos_max: Optional[List[float]] = None
     # Left wrist rotation calibration: R_out = wrist_rotation_calib_matrix @ R_wrist (same convention as detector)
     wrist_rotation_calib_matrix: List[List[float]] = field(default_factory=_identity_3x3)
     joint_indices: Optional[List[int]] = field(default_factory=lambda: list(range(22)))
@@ -315,6 +318,25 @@ class SimulationConfig:
             raise ValueError("simulation.finger_ctrl_indices cannot be empty")
         if len(self.root_position_offset) != 3:
             raise ValueError("simulation.root_position_offset must have length 3")
+        if (self.wrist_pos_min is None) != (self.wrist_pos_max is None):
+            raise ValueError(
+                "simulation.wrist_pos_min and simulation.wrist_pos_max must be set together"
+            )
+        if self.wrist_pos_min is not None:
+            lo = np.asarray(self.wrist_pos_min, dtype=np.float64).reshape(-1)
+            hi = np.asarray(self.wrist_pos_max, dtype=np.float64).reshape(-1)
+            if lo.size != 3 or hi.size != 3:
+                raise ValueError(
+                    "simulation.wrist_pos_min and wrist_pos_max must have length 3"
+                )
+            if not np.all(np.isfinite(lo)) or not np.all(np.isfinite(hi)):
+                raise ValueError(
+                    "simulation.wrist_pos_min and wrist_pos_max must be finite"
+                )
+            if np.any(lo > hi):
+                raise ValueError(
+                    "simulation.wrist_pos_min must be <= wrist_pos_max on every axis"
+                )
         mat = np.asarray(self.wrist_rotation_calib_matrix, dtype=np.float64)
         if mat.shape != (3, 3):
             raise ValueError("simulation.wrist_rotation_calib_matrix must be 3x3")
@@ -457,6 +479,16 @@ def _parse_random_obj_goal(raw: Dict[str, Any]) -> RandomObjGoalConfig:
     return RandomObjGoalConfig(targets=targets)
 
 
+def _parse_optional_xyz(raw: Dict[str, Any], key: str) -> Optional[List[float]]:
+    value = raw.get(key)
+    if value is None:
+        return None
+    arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    if arr.size != 3 or not np.all(np.isfinite(arr)):
+        raise ValueError(f"simulation.{key} must be length-3 finite values")
+    return [float(x) for x in arr]
+
+
 def _parse_socket_publish(raw: Dict[str, Any]) -> SocketPublishConfig:
     block = dict(raw.get("socket_publish", {}))
     return SocketPublishConfig(
@@ -502,6 +534,8 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
             )
         ),
         root_position_offset=list(raw.get("root_position_offset", [0.2, 0.0, -0.6])),
+        wrist_pos_min=_parse_optional_xyz(raw, "wrist_pos_min"),
+        wrist_pos_max=_parse_optional_xyz(raw, "wrist_pos_max"),
         wrist_rotation_calib_matrix=_parse_wrist_rotation_calib_matrix(raw),
         joint_indices=raw.get("joint_indices", list(range(22))),
         camera_names=list(raw.get("camera_names", [])),

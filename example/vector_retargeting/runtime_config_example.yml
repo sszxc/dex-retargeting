@@ -36,6 +36,9 @@ simulation:
   root_ctrl_indices: [0, 1, 2, 3, 4, 5]
   finger_ctrl_indices: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
   root_position_offset: [0.2, 0.0, -0.6]
+  # World-frame AABB for wrist target after root_position_offset. Omit both to disable.
+  # wrist_pos_min: [-0.4, 0.2, 0.2]
+  # wrist_pos_max: [0.4, 1.0, 0.9]
   wrist_rotation_offset_rpy: [0.0, 0.0, 0.0]
   joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
   camera_names: []

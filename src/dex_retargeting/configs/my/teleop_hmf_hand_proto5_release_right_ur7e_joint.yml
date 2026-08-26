@@ -58,41 +58,41 @@ simulation:
   #     - [0.5, 0.8]
   #     - [0.7, 0.9]
   # ------- task: drawer -------
-  # mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_drawer.xml
-  # startup_keyframe: home
-  # random_obj_goal:
-  #   - name: drawer
-  #     type: body
-  #     position_ranges:
-  #     - [-0.2, 0.2]
-  #     - [0.8, 1.0]
-  #     - [0.6, 0.6]
-  #   - name: goal
-  #     type: site
-  #     position_ranges:
-  #     - [-0.3, 0.3]
-  #     - [0.5, 0.8]
-  #     - [0.7, 0.9]
-  # task_reset_joint:
-  #   enabled: true
-  #   name: goal_slidey
-  #   value: 0.0
-  # ------- task: basketball -------
-  mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_basketball.xml
+  mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_drawer.xml
   startup_keyframe: home
   random_obj_goal:
-    - name: ball
+    - name: drawer
       type: body
       position_ranges:
       - [-0.2, 0.2]
-      - [0.5, 0.7]
+      - [0.8, 1.0]
       - [0.6, 0.6]
     - name: goal
-      type: body
+      type: site
       position_ranges:
       - [-0.3, 0.3]
-      - [0.7, 0.8]
-      - [0.6, 0.6]
+      - [0.5, 0.8]
+      - [0.7, 0.9]
+  task_reset_joint:
+    enabled: true
+    name: goal_slidey
+    value: 0.0
+  # ------- task: basketball -------
+  # mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_basketball.xml
+  # startup_keyframe: home
+  # random_obj_goal:
+  #   - name: ball
+  #     type: body
+  #     position_ranges:
+  #     - [-0.2, 0.2]
+  #     - [0.5, 0.7]
+  #     - [0.6, 0.6]
+  #   - name: goal
+  #     type: body
+  #     position_ranges:
+  #     - [-0.3, 0.3]
+  #     - [0.7, 0.8]
+  #     - [0.6, 0.6]
   # ------- task end -------
   control_hand: right
   root_ctrl_indices:
@@ -120,6 +120,9 @@ simulation:
   - 14
   - 15
   root_position_offset: [0.0, 0.6, 0.55]
+  # World-frame AABB after offset; omit both to disable clipping.
+  wrist_pos_min: [-0.4, 0.6, 0.7]
+  wrist_pos_max: [0.4, 0.8, 0.9]
   wrist_rotation_offset_rpy: [1.57, 0, -2.5]
   joint_indices:
   - 0
