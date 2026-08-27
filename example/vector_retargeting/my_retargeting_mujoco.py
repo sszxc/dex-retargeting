@@ -393,6 +393,101 @@ def _apply_task_reset_joint(
     return True
 
 
+def _apply_startup_joint_qpos(
+    model: mujoco.MjModel, data: mujoco.MjData, sim: SimulationConfig
+) -> bool:
+    """Force-set named joints' qpos right after startup (after startup_keyframe, so it
+    wins). Looked up by joint name directly, so it works whether or not the joint has an
+    actuator (e.g. a passive, mocap/weld-driven arm joint) — unlike driving through a
+    ctrl index, which silently breaks if that ctrl index doesn't exist or maps to a
+    different joint than intended. Hinge/slide (1 qpos) joints only."""
+    mapping = sim.startup_joint_qpos
+    if not mapping:
+        return False
+
+    applied: dict[str, float] = {}
+    for joint_name, value in mapping.items():
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if joint_id < 0:
+            logger.warning(f"startup_joint_qpos: joint not found '{joint_name}'; skipping")
+            continue
+        if model.jnt_type[joint_id] not in (
+            mujoco.mjtJoint.mjJNT_HINGE,
+            mujoco.mjtJoint.mjJNT_SLIDE,
+        ):
+            logger.warning(
+                f"startup_joint_qpos: joint '{joint_name}' is not hinge/slide (1 qpos); skipping"
+            )
+            continue
+        qadr = int(model.jnt_qposadr[joint_id])
+        dadr = int(model.jnt_dofadr[joint_id])
+        data.qpos[qadr] = float(value)
+        data.qvel[dadr] = 0.0
+        applied[joint_name] = float(value)
+
+    if applied:
+        mujoco.mj_forward(model, data)
+        logger.info(f"Loaded startup_joint_qpos={applied}")
+    return bool(applied)
+
+
+def _find_weld_partner_body(model: mujoco.MjModel, body_id: int) -> Optional[int]:
+    """Find the other body in an <equality type="weld"> constraint involving body_id,
+    e.g. the arm end-effector welded to a teleop mocap target."""
+    for i in range(model.neq):
+        if model.eq_type[i] != mujoco.mjtEq.mjEQ_WELD:
+            continue
+        obj1, obj2 = int(model.eq_obj1id[i]), int(model.eq_obj2id[i])
+        if obj1 == body_id:
+            return obj2
+        if obj2 == body_id:
+            return obj1
+    return None
+
+
+def _sync_mocap_to_startup_pose(
+    model: mujoco.MjModel, data: mujoco.MjData, controller: MujocoHandController
+) -> None:
+    """After a startup_joint_qpos override, snap the mocap target to its <equality weld>
+    partner body's current FK pose (e.g. the arm's end-effector), so the weld constraint
+    starts out satisfied instead of immediately pulling the arm away from the override
+    on the very first mj_step. Note: for an underactuated/redundant chain (more passive
+    joints than the weld's 6 constraint DOF), this only pins the end-effector pose —
+    the individual joint angles you set may still drift over the next few seconds toward
+    whichever configuration the rest of the passive dynamics (springs/gravity) settle on."""
+    if not controller.simulation.mocap.wrist_mocap:
+        return
+    try:
+        mocap_id = controller._resolve_mocap_id()  # type: ignore[attr-defined]
+    except Exception as err:
+        logger.warning(f"startup_joint_qpos: mocap id unresolved, skipping mocap sync: {err}")
+        return
+    if mocap_id is None:
+        return
+
+    body_mocapid = np.asarray(model.body_mocapid)
+    match = np.where(body_mocapid == mocap_id)[0]
+    if match.size == 0:
+        logger.warning("startup_joint_qpos: could not resolve mocap body id; skipping mocap sync")
+        return
+    mocap_body_id = int(match[0])
+
+    partner_body_id = _find_weld_partner_body(model, mocap_body_id)
+    if partner_body_id is None:
+        logger.warning(
+            "startup_joint_qpos: mocap enabled but no <equality weld> found for the mocap "
+            "body; mocap target left unchanged (it may pull the arm away from the override)."
+        )
+        return
+
+    data.mocap_pos[mocap_id] = np.asarray(data.xpos[partner_body_id], dtype=np.float64).copy()
+    data.mocap_quat[mocap_id] = np.asarray(data.xquat[partner_body_id], dtype=np.float64).copy()
+    mujoco.mj_forward(model, data)
+    logger.info(
+        f"Synced mocap target to weld partner body id={partner_body_id} after startup_joint_qpos"
+    )
+
+
 def _reset_randomized_env(
     model: mujoco.MjModel, data: mujoco.MjData, runtime_cfg: RuntimeConfig
 ) -> bool:
@@ -406,6 +501,7 @@ def main(
     dataset_dir: str = "data/hdf5",
     start_key: str = "s",
     stop_key: str = "e",
+    track_key: str = "t",
     viewer_count: int = DEFAULT_VIEWER_COUNT,
 ):
     runtime_cfg: RuntimeConfig = load_runtime_config(runtime_config_path)
@@ -437,9 +533,15 @@ def main(
             mujoco.mj_forward(model, data)
             logger.info(f"Loaded startup_keyframe='{kf_name}' (id={kf_id})")
 
+    controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
+
+    # Optional: override named joints' qpos with a manually-supplied value, e.g. copied
+    # from a real arm's current joint reading. Applied after startup_keyframe so it wins.
+    if _apply_startup_joint_qpos(model, data, runtime_cfg.simulation):
+        _sync_mocap_to_startup_pose(model, data, controller)
+
     _reset_randomized_env(model, data, runtime_cfg)
 
-    controller = MujocoHandController(simulation=runtime_cfg.simulation, model=model)
     initial_root_position_offset = np.asarray(
         runtime_cfg.simulation.root_position_offset, dtype=np.float64
     ).reshape(3).copy()
@@ -497,6 +599,9 @@ def main(
     record_stop_requested = False
     randomize_requested = False
     assist_near_object_pending = False
+    translation_tracking_active = False
+    translation_engage_pending = False
+    translation_track_key_down = False
     is_recording = False
     episode_idx = 0
     episode_buffers: Optional[dict[str, list]] = None
@@ -563,24 +668,45 @@ def main(
         logger.info(f"Episode {idx} saved to {dataset_path}, steps={max_timesteps}")
 
     def on_press(key):
-        nonlocal record_start_requested, record_stop_requested, randomize_requested, should_exit, assist_near_object_pending
+        nonlocal record_start_requested, record_stop_requested, randomize_requested, should_exit
+        nonlocal assist_near_object_pending, translation_tracking_active, translation_engage_pending
+        nonlocal translation_track_key_down
+        print(f"[DEBUG] on_press fired: key={key!r}", flush=True)
         try:
-            with keyboard_lock:
-                if key == keyboard.Key.space:
-                    assist_near_object_pending = True
-                    return
             if hasattr(key, "char") and key.char:
                 with keyboard_lock:
-                    if key.char == start_key and not is_recording:
+                    if key.char == track_key:
+                        # OS key-repeat re-fires on_press while the key is held, with no
+                        # on_release in between; only the first press of a given physical
+                        # hold (key_down False -> True) should flip the toggle.
+                        if not translation_track_key_down:
+                            translation_track_key_down = True
+                            translation_tracking_active = not translation_tracking_active
+                            if translation_tracking_active:
+                                translation_engage_pending = True
+                            print(
+                                f"[DEBUG] TRACK key toggled -> translation_tracking_active={translation_tracking_active}",
+                                flush=True,
+                            )
+                    elif key.char == start_key and not is_recording:
                         record_start_requested = True
                     elif key.char == stop_key and is_recording:
                         record_stop_requested = True
                     elif key.char == "r":
                         randomize_requested = True
+                    elif key.char == "a":
+                        assist_near_object_pending = True
                     elif key.char == "q":
                         should_exit = True
         except AttributeError:
             pass
+
+    def on_release(key):
+        nonlocal translation_track_key_down
+        print(f"[DEBUG] on_release fired: key={key!r}", flush=True)
+        if hasattr(key, "char") and key.char == track_key:
+            with keyboard_lock:
+                translation_track_key_down = False
 
     total_viewer_count = max(1, int(viewer_count))
     secondary_viewer_queues: list[multiprocessing.Queue] = []
@@ -607,11 +733,14 @@ def main(
 
     renderer = mujoco.Renderer(model, width=640, height=480)
 
-    keyboard_listener = keyboard.Listener(on_press=on_press)
+    keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     keyboard_listener.start()
     logger.info(
         f"Keyboard listener started: '{start_key}' start recording, '{stop_key}' stop and save, "
-        f"'r' randomize obj/goal, Space (when hand detected) nudge root_position_offset along palm→obj, 'q' quit"
+        f"'r' randomize obj/goal, '{track_key}' toggle wrist TRANSLATION tracking to camera "
+        f"hand position (offset recomputed each time it turns on, so it resumes without a "
+        f"jump; rotation always tracks via the config's static wrist_rotation_offset_rpy), "
+        f"'a' (when hand detected) nudge root_position_offset along palm→obj, 'q' quit"
     )
 
     latest_msg = None
@@ -645,6 +774,9 @@ def main(
             if latest_msg is not None and now - last_control_time >= control_interval:
                 with keyboard_lock:
                     assist_do = assist_near_object_pending
+                    track_translation = translation_tracking_active
+                    engage_translation = translation_engage_pending
+                    translation_engage_pending = False
                 if assist_do:
                     ch = runtime_cfg.simulation.control_hand
                     if latest_msg.get(f"hand_{ch}_qpos") is not None:
@@ -657,7 +789,12 @@ def main(
                             logger.warning(assist_msg)
                         with keyboard_lock:
                             assist_near_object_pending = False
-                controller.apply(data, latest_msg)
+                controller.apply(
+                    data,
+                    latest_msg,
+                    track_translation=track_translation,
+                    engage_translation=engage_translation,
+                )
 
                 if state_publisher is not None and mocap_id_for_action is not None:
                     ch = runtime_cfg.simulation.control_hand
@@ -802,6 +939,9 @@ def main(
                     record_start_requested = False
                     record_stop_requested = False
                     assist_near_object_pending = False
+                    translation_tracking_active = False
+                    translation_engage_pending = False
+                    translation_track_key_down = False
                     runtime_cfg.simulation.root_position_offset[0] = float(initial_root_position_offset[0])
                     runtime_cfg.simulation.root_position_offset[1] = float(initial_root_position_offset[1])
                     runtime_cfg.simulation.root_position_offset[2] = float(initial_root_position_offset[2])

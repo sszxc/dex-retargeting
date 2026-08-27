@@ -288,6 +288,14 @@ class SimulationConfig:
     mj_xml_path: str
     # If set, load this keyframe immediately after MuJoCo starts (<keyframe> name in MJCF)
     startup_keyframe: Optional[str] = None
+    # If set, overrides named joints' qpos right after startup (after startup_keyframe, so it
+    # takes precedence). Looked up by joint name directly, independent of whether the joint has
+    # an actuator — works for an actuated root (e.g. hand_root's tx/ty/tz/rx/ry/rz) as well as a
+    # passive/mocap-driven arm (e.g. a UR arm's 6 revolute joints with no position actuator).
+    # Handy for seeding the sim's home pose from a real arm's current joint reading. If
+    # mocap.wrist_mocap is enabled, the mocap target is auto-synced (via the model's
+    # <equality><weld> partner body) so the weld constraint doesn't immediately pull it away.
+    startup_joint_qpos: Optional[Dict[str, float]] = None
     control_hand: str = "left"
     root_ctrl_indices: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
     finger_ctrl_indices: List[int] = field(
@@ -318,6 +326,16 @@ class SimulationConfig:
             raise ValueError("simulation.finger_ctrl_indices cannot be empty")
         if len(self.root_position_offset) != 3:
             raise ValueError("simulation.root_position_offset must have length 3")
+        if self.startup_joint_qpos is not None:
+            if not self.startup_joint_qpos:
+                raise ValueError("simulation.startup_joint_qpos cannot be an empty mapping")
+            for name, value in self.startup_joint_qpos.items():
+                if not str(name).strip():
+                    raise ValueError("simulation.startup_joint_qpos has an empty joint name")
+                if not np.isfinite(value):
+                    raise ValueError(
+                        f"simulation.startup_joint_qpos['{name}'] must be a finite value"
+                    )
         if (self.wrist_pos_min is None) != (self.wrist_pos_max is None):
             raise ValueError(
                 "simulation.wrist_pos_min and simulation.wrist_pos_max must be set together"
@@ -479,14 +497,29 @@ def _parse_random_obj_goal(raw: Dict[str, Any]) -> RandomObjGoalConfig:
     return RandomObjGoalConfig(targets=targets)
 
 
-def _parse_optional_xyz(raw: Dict[str, Any], key: str) -> Optional[List[float]]:
+def _parse_optional_vec(raw: Dict[str, Any], key: str, length: int) -> Optional[List[float]]:
     value = raw.get(key)
     if value is None:
         return None
     arr = np.asarray(value, dtype=np.float64).reshape(-1)
-    if arr.size != 3 or not np.all(np.isfinite(arr)):
-        raise ValueError(f"simulation.{key} must be length-3 finite values")
+    if arr.size != length or not np.all(np.isfinite(arr)):
+        raise ValueError(f"simulation.{key} must be length-{length} finite values")
     return [float(x) for x in arr]
+
+
+def _parse_optional_xyz(raw: Dict[str, Any], key: str) -> Optional[List[float]]:
+    return _parse_optional_vec(raw, key, 3)
+
+
+def _parse_startup_joint_qpos(raw: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    value = raw.get("startup_joint_qpos")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            "simulation.startup_joint_qpos must be a mapping of {joint_name: qpos_value}"
+        )
+    return {str(name): float(v) for name, v in value.items()}
 
 
 def _parse_socket_publish(raw: Dict[str, Any]) -> SocketPublishConfig:
@@ -525,6 +558,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
             if raw.get("startup_keyframe") is not None
             else None
         ),
+        startup_joint_qpos=_parse_startup_joint_qpos(raw),
         control_hand=str(raw.get("control_hand", "left")),
         root_ctrl_indices=list(raw.get("root_ctrl_indices", [0, 1, 2, 3, 4, 5])),
         finger_ctrl_indices=list(

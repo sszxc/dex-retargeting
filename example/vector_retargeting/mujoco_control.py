@@ -22,6 +22,17 @@ def _rotmat_to_quat_wxyz(rotmat: np.ndarray) -> np.ndarray:
     return np.array([qw, qx, qy, qz], dtype=np.float64)
 
 
+def _euler_xyz_intrinsic_to_rotmat(euler: np.ndarray) -> np.ndarray:
+    """Inverse of optimizer.py's `Rotation.from_matrix(...).as_euler("XYZ")` — the
+    convention the retargeting solver uses for the dummy free joint's root[3:6]
+    (matches the serial x->y->z revolute chain built by add_dummy_free_joints)."""
+    return SciRotation.from_euler("XYZ", np.asarray(euler, dtype=np.float64).reshape(3)).as_matrix()
+
+
+def _rotmat_to_euler_xyz_intrinsic(rotmat: np.ndarray) -> np.ndarray:
+    return SciRotation.from_matrix(rotmat).as_euler("XYZ")
+
+
 def _quat_wxyz_to_euler_zyx(quat: np.ndarray) -> np.ndarray:
     qw, qx, qy, qz = quat
     sinr_cosp = 2 * (qw * qx + qy * qz)
@@ -94,7 +105,45 @@ class MujocoHandController:
             np.asarray(hi, dtype=np.float64).reshape(3),
         )
 
-    def apply(self, data: mujoco.MjData, msg: dict) -> None:
+    def _engage_translation_tracking_mocap(
+        self,
+        data: mujoco.MjData,
+        mocap_id: int,
+        raw_pos: Optional[np.ndarray],
+    ) -> None:
+        """Mocap-path equivalent of _engage_translation_tracking: recompute root_position_offset
+        (translation only) from data.mocap_pos (the current commanded target) vs. this
+        frame's raw camera wrist position, so translation tracking resumes with zero
+        jump. Rotation is never engaged here — it always follows the camera hand via the
+        static wrist_rotation_calib_matrix (parsed from simulation.wrist_rotation_offset_rpy),
+        independent of the track/engage state."""
+        if raw_pos is None:
+            return
+        current_pos = np.asarray(data.mocap_pos[mocap_id], dtype=np.float64).reshape(3)
+        new_offset = current_pos - np.asarray(raw_pos, dtype=np.float64).reshape(3)
+        for i in range(3):
+            self.simulation.root_position_offset[i] = float(new_offset[i])
+
+    def _engage_translation_tracking(self, data: mujoco.MjData, raw_root: np.ndarray) -> None:
+        """Recompute root_position_offset (translation only) so translation tracking
+        resumes from the wrist's current commanded position (data.ctrl) with zero jump.
+        Rotation is never engaged here — it always follows the camera hand via the static
+        wrist_rotation_calib_matrix, independent of the track/engage state. Called once on
+        the rising edge of a wrist-tracking toggle-on (track key press)."""
+        idx = self.simulation.root_ctrl_indices
+        current_pos = np.array([data.ctrl[int(i)] for i in idx[:3]], dtype=np.float64)
+        raw_pos = raw_root[:3]
+        new_offset = current_pos - raw_pos
+        for i in range(3):
+            self.simulation.root_position_offset[i] = float(new_offset[i])
+
+    def apply(
+        self,
+        data: mujoco.MjData,
+        msg: dict,
+        track_translation: bool = True,
+        engage_translation: bool = False,
+    ) -> None:
         hand = self.simulation.control_hand
         qpos = msg.get(f"hand_{hand}_qpos")
         wrist_pos = msg.get(f"wrist_{hand}_pos")
@@ -156,29 +205,56 @@ class MujocoHandController:
             if mocap_id is None:
                 logger.warning("wrist_mocap=True but mocap id unresolved; skipping wrist output")
                 return
+
+            # Rotation always follows the camera hand via the static calibration from
+            # config, regardless of track_translation — the 't' key only gates translation.
+            if wrist_quat is not None:
+                r_cal = np.asarray(
+                    self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
+                ).reshape(3, 3)
+                quat = np.asarray(wrist_quat, dtype=np.float64).reshape(4)
+                r_w = _quat_wxyz_to_rotmat(quat)
+                data.mocap_quat[mocap_id] = _rotmat_to_quat_wxyz(r_w @ r_cal)
+
+            if not track_translation:
+                # Translation tracking toggled off: leave mocap_pos untouched so the
+                # wrist (and whatever it's welded/connected to) freezes in place.
+                return
+            if engage_translation:
+                self._engage_translation_tracking_mocap(data, mocap_id, wrist_pos)
+
             pos_off = np.asarray(self.simulation.root_position_offset, dtype=np.float64)
-            r_cal = np.asarray(
-                self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
-            ).reshape(3, 3)
             if wrist_pos is not None:
                 data.mocap_pos[mocap_id] = self._clip_wrist_pos(
                     np.asarray(wrist_pos, dtype=np.float64) + pos_off
                 )
-            if wrist_quat is not None:
-                quat = np.asarray(wrist_quat, dtype=np.float64).reshape(4)
-                r_w = _quat_wxyz_to_rotmat(quat)
-                data.mocap_quat[mocap_id] = _rotmat_to_quat_wxyz(r_w @ r_cal)
             return
 
         if q.shape[0] >= 6:
             root = q[:6].copy()
-            root[:3] = self._clip_wrist_pos(
+
+            # Rotation always follows the camera hand via the static calibration from
+            # config, regardless of track_translation — the 't' key only gates translation.
+            r_cal = np.asarray(
+                self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
+            ).reshape(3, 3)
+            r_out = _euler_xyz_intrinsic_to_rotmat(root[3:6]) @ r_cal
+            euler_out = _rotmat_to_euler_xyz_intrinsic(r_out)
+            for local_i, ctrl_idx in enumerate(self.simulation.root_ctrl_indices[3:6]):
+                data.ctrl[int(ctrl_idx)] = euler_out[local_i]
+
+            if not track_translation:
+                # Translation tracking toggled off: leave root position ctrl untouched
+                # so the wrist freezes in place. Fingers above still update every frame.
+                return
+            if engage_translation:
+                self._engage_translation_tracking(data, root)
+
+            pos = self._clip_wrist_pos(
                 root[:3] + np.asarray(self.simulation.root_position_offset, dtype=np.float64)
             )
             for local_i, ctrl_idx in enumerate(self.simulation.root_ctrl_indices[:3]):
-                data.ctrl[int(ctrl_idx)] = root[local_i]
-            for local_i, ctrl_idx in enumerate(self.simulation.root_ctrl_indices[3:6], start=3):
-                data.ctrl[int(ctrl_idx)] = root[local_i]
+                data.ctrl[int(ctrl_idx)] = pos[local_i]
             return
 
         # Fallback: if q has no root but wrist quaternion exists, drive root rotation from it

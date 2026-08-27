@@ -32,6 +32,21 @@ simulation:
   #   - name: site
   #     type: site
   #     position_ranges: [[-0.3, 0.3], [0.5, 0.8], [0.1, 0.3]]
+  # startup_keyframe: home  # optional: load a named MJCF <keyframe> right after startup
+  # Optional: force-set named joints' qpos right after startup (after startup_keyframe, so
+  # it wins). Looked up by joint name, so it works whether or not the joint has an actuator
+  # (e.g. hand_root's tx/ty/tz/rx/ry/rz, or a passive/mocap-driven arm joint). Handy for
+  # seeding the sim's home pose from a real arm's current joint reading. If
+  # mocap.wrist_mocap is enabled, the mocap target auto-syncs to its <equality weld>
+  # partner body's FK pose so the weld doesn't immediately pull it away — note this only
+  # pins the end-effector pose, not each joint angle, if the chain is underactuated.
+  # startup_joint_qpos:
+  #   tx: 1.502260446548462
+  #   ty: -1.4885881927660485
+  #   tz: 1.7446430365191858
+  #   rx: -3.229879995385641
+  #   ry: -1.6815851370440882
+  #   rz: 0.13496923446655273
   control_hand: left
   root_ctrl_indices: [0, 1, 2, 3, 4, 5]
   finger_ctrl_indices: [14, 15, 16, 17, 18, 19, 20, 21, 10, 11, 12, 13, 6, 7, 8, 9]
@@ -47,7 +62,8 @@ simulation:
     wrist_mocap: false
     mocap_body_name: null
     mocap_id: null
-  # Space: when a hand is detected, nudge root_position_offset along (obj - palm); see my_retargeting_mujoco
+  # 'a' key: when a hand is detected, nudge root_position_offset along (obj - palm); see my_retargeting_mujoco
+  # ('t' key: toggle wrist translation tracking; see track_key / my_retargeting_mujoco.py)
   assist_near_object:
     gain: 0.25
     max_step_m: 0.12
