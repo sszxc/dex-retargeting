@@ -122,6 +122,13 @@ simulation:
   - 13
   - 14
   - 15
+  startup_joint_qpos:
+    RArm_shoulder_pan_joint: 1.502260446548462
+    RArm_shoulder_lift_joint: -1.4885881927660485
+    RArm_elbow_joint: 1.7446430365191858
+    RArm_wrist_1_joint: -3.229879995385641
+    RArm_wrist_2_joint: -1.6815851370440882
+    RArm_wrist_3_joint: 0.13496923446655273
   root_position_offset: [0.0, 0.6, 0.55]
   # World-frame AABB after offset; omit both to disable clipping.
   wrist_pos_min: [-0.57, 0.45, 0.85]
