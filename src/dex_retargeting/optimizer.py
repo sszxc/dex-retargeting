@@ -807,8 +807,37 @@ def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.
     # vec_in_new_coord = rotmat.T @ (joint_pos[3] - joint_pos[2])
     # _success, _angles, _error, _actual_vec = calculate_thumb_angles(vec_in_new_coord)
     # a[10:13] = _angles
-    # angle between [0-4] and xy plane
-    a[10] = angle_between_plane_and_vector(joint_pos[0] - joint_pos[4], x_dir, y_dir) * -1.5
+    #
+    # Leap's thumb "metacarpal" bone is zero-length: joint_pos[1] == joint_pos[2] on
+    # every single frame (verified from a recorded session,
+    # data/leap_records/leap_right_20260827_113201.npz). So there is no dedicated
+    # segment for the base/CMC joint, which is why the old a[10] (driven off the
+    # tip-to-wrist vector, several joints downstream) barely responded to it. T1Z sits
+    # at that same zero-offset point in the URDF, so its ab/duction is read off the
+    # azimuth of the proximal-phalanx segment (joint_pos[3] - joint_pos[2]) within the
+    # palm plane (x_dir, z_dir) instead.
+    #
+    # A rest-anchored (offset, scale) fit turned out too fragile: it depends on that
+    # session's resting hand-to-sensor pose, so both the usable range and the sign
+    # would drift session to session. Replaced with a min-max fit calibrated directly
+    # against T1Z's own limits, from a dedicated calibration recording (3 full
+    # abduction<->adduction swings, data/leap_records/leap_right_t1z_calib2.npz):
+    # measured azimuth ran -0.53 rad (thumb swept fully adducted, toward the palm) to
+    # 1.20 rad (thumb swept fully abducted, away from the palm). Mapped onto T1Z so
+    # abduction -> T1Z_LOWER (the joint's big -90 deg range) and adduction ->
+    # T1Z_UPPER (its small +10 deg range) -- this direction is a best guess from the
+    # URDF's asymmetric limits, not confirmed on hardware; if it still looks backwards
+    # live, swap the two lines marked below (both stay clipped inside the limit either
+    # way, so flipping can't newly saturate/clip like the old rest-anchored fit did).
+    thumb_prox = joint_pos[3] - joint_pos[2]
+    thumb_prox_n = thumb_prox / max(np.linalg.norm(thumb_prox), 1e-8)
+    thumb_azimuth = np.arctan2(np.dot(thumb_prox_n, z_dir), np.dot(thumb_prox_n, x_dir))
+    AZ_ADDUCT, AZ_ABDUCT = -0.0, 1.20
+    T1Z_LOWER, T1Z_UPPER = -1.5708, 0.1745
+    az_frac = np.clip((thumb_azimuth - AZ_ADDUCT) / (AZ_ABDUCT - AZ_ADDUCT), 0.0, 1.0)
+    a[10] = T1Z_UPPER - az_frac * (T1Z_UPPER - T1Z_LOWER)  # abduction -> T1Z_LOWER
+    # if backwards, use instead: a[10] = T1Z_LOWER + az_frac * (T1Z_UPPER - T1Z_LOWER)
+    # T1Y/T2Y/T3Y intentionally left untouched (pre-existing formula, shared like before).
     a[11] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
     a[12] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
     a[13] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
