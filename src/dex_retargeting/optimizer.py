@@ -801,6 +801,71 @@ def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.
         angle_with_normal = np.arccos(dot)
         return abs(np.pi / 2.0 - angle_with_normal)
 
+    def signed_angle_between_plane_and_vector(plane_vector1, plane_vector2, vector):
+        """Signed elevation of ``vector`` out of the plane of ``plane_vector1``, ``plane_vector2``.
+
+        ``angle_between_plane_and_vector`` takes abs(π/2 - angle_with_normal), so a
+        vector rising above the plane and one dipping below by the same amount both
+        collapse onto the same small positive reading -- the same aliasing that made
+        ``angle_between_vectors`` unable to tell flexion from hyperextension.
+        Decomposing into the out-of-plane (sin) and in-plane (cos) components against
+        the oriented normal plane_vector1 × plane_vector2 and reading the angle off
+        with arctan2 keeps the sign: positive when ``vector`` is on the same side as
+        that normal, negative on the opposite side.
+        """
+        n1 = np.linalg.norm(plane_vector1)
+        n2 = np.linalg.norm(plane_vector2)
+        n_vec = np.linalg.norm(vector)
+        if n1 < 1e-8 or n2 < 1e-8 or n_vec < 1e-8:
+            return 0.0
+        plane_normal = np.cross(plane_vector1, plane_vector2)
+        norm_normal = np.linalg.norm(plane_normal)
+        if norm_normal < 1e-8:
+            return 0.0
+        plane_normal = plane_normal / norm_normal
+        vector_norm = vector / n_vec
+        sin_component = np.clip(np.dot(plane_normal, vector_norm), -1.0, 1.0)
+        in_plane = vector_norm - sin_component * plane_normal
+        cos_component = np.linalg.norm(in_plane)
+        return np.arctan2(sin_component, cos_component)
+
+    def signed_angle_between_vectors(v1, v2, axis):
+        """Signed angle from v1 to v2, right-handed about ``axis``.
+
+        ``angle_between_vectors`` is an arccos of a dot product, so it only ever
+        returns a magnitude in [0, pi]: a finger flexing forward by a few degrees
+        and one hyperextending backward by the same amount both collapse onto the
+        same small positive reading, indistinguishable from each other. Decomposing
+        into sin/cos components against a known rotation axis and reading the angle
+        off with arctan2 -- the same trick used for T1Z's ab/duction above -- keeps
+        the sign, so hyperextension reads negative instead of aliasing onto "barely
+        flexed".
+        """
+        n1 = np.linalg.norm(v1)
+        n2 = np.linalg.norm(v2)
+        n_axis = np.linalg.norm(axis)
+        if n1 < 1e-8 or n2 < 1e-8 or n_axis < 1e-8:
+            return 0.0
+        v1n = v1 / n1
+        v2n = v2 / n2
+        axis_n = axis / n_axis
+        sin_component = np.dot(np.cross(v1n, v2n), axis_n)
+        cos_component = np.clip(np.dot(v1n, v2n), -1.0, 1.0)
+        return np.arctan2(sin_component, cos_component)
+
+    # Rotation axis for the *Y (flex/extend) joints of index/middle/ring. Flexion
+    # curls the finger from pointing along z_dir down toward -y_dir (into the palm),
+    # so its axis is the remaining palm-frame direction, x_dir (across the knuckles) --
+    # same role x_dir/z_dir play for T1Z's ab/duction plane above, one axis over.
+    # Sign (not just the axis choice) checked against data/leap_records/
+    # leap_right_20260827_113201.npz: with -x_dir, index/middle/ring DIP joints read
+    # positive (matching the old arccos convention) on the vast majority of frames of
+    # that relaxed-hand recording. That session never closes into a fist or holds a
+    # sustained hyperextension though, so this is a directional check, not a proper
+    # calibration -- if a finger's *Y reads backwards live (extends when the real
+    # finger flexes), negate flex_axis below.
+    # flex_axis = -x_dir
+
     # from dex_retargeting.thumb_retarget import calculate_thumb_angles
 
     # # thumb
@@ -832,7 +897,7 @@ def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.
     thumb_prox = joint_pos[3] - joint_pos[2]
     thumb_prox_n = thumb_prox / max(np.linalg.norm(thumb_prox), 1e-8)
     thumb_azimuth = np.arctan2(np.dot(thumb_prox_n, z_dir), np.dot(thumb_prox_n, x_dir))
-    AZ_ADDUCT, AZ_ABDUCT = -0.0, 1.20
+    AZ_ADDUCT, AZ_ABDUCT = -0.3, 1.20
     T1Z_LOWER, T1Z_UPPER = -1.5708, 0.1745
     az_frac = np.clip((thumb_azimuth - AZ_ADDUCT) / (AZ_ABDUCT - AZ_ADDUCT), 0.0, 1.0)
     a[10] = T1Z_UPPER - az_frac * (T1Z_UPPER - T1Z_LOWER)  # abduction -> T1Z_LOWER
@@ -843,30 +908,30 @@ def hmf_proto5_left_dummy_qpos_from_leap_joint_pos(joint_pos: np.ndarray) -> np.
     a[13] = angle_between_vectors(joint_pos[3] - joint_pos[2], joint_pos[4] - joint_pos[3]) * 1.2
 
     # index
-    # a[18] = angle_between_plane_and_vector(
-    #     joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir
-    # )
-    a[18] = angle_between_vectors(joint_pos[5] - joint_pos[8], joint_pos[9] - joint_pos[12]) * 2 - 0.3
-    a[21] = angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7])*0.5 - 0.1
-    a[19] = angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6])*1.5 - 0.1
+    a[18] = signed_angle_between_plane_and_vector(
+        joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], y_dir
+    ) * -1.5 + 0.6
+    # a[18] = angle_between_vectors(joint_pos[5] - joint_pos[8], joint_pos[9] - joint_pos[12]) * 2 - 0.3
+    a[21] = signed_angle_between_vectors(joint_pos[7] - joint_pos[6], joint_pos[8] - joint_pos[7], z_dir) * 1.1 - 0.2
+    a[19] = signed_angle_between_vectors(joint_pos[6] - joint_pos[5], joint_pos[7] - joint_pos[6], z_dir) * 1.05 + 0.4
     a[20] = 0.5 * (a[19] + a[21])
 
     # middle
-    a[14] = angle_between_plane_and_vector(
+    a[14] = signed_angle_between_plane_and_vector(
         joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], y_dir
-    ) * 2 - 0.4
-    a[17] = angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11])*0.5 - 0.1
-    a[16] = angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10])*1.5 - 0.1
-    a[15] = 0.5 * (a[14] + a[16])
+    ) * -1 + 0.35
+    a[17] = signed_angle_between_vectors(joint_pos[11] - joint_pos[10], joint_pos[12] - joint_pos[11], z_dir) * 0.9 - 0.2
+    a[15] = signed_angle_between_vectors(joint_pos[10] - joint_pos[9], joint_pos[11] - joint_pos[10], z_dir) * 1.05 + 0.2
+    a[16] = 0.5 * (a[15] + a[17])
 
     # ring
-    # a[6] = angle_between_plane_and_vector(
-    #     joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir
-    # )
-    a[6] = angle_between_vectors(joint_pos[13] - joint_pos[16], joint_pos[9] - joint_pos[12]) * -2 + 0.3
-    a[9] = angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15])*0.5 - 0.1
-    a[8] = angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14])*1.5 - 0.1
-    a[7] = 0.5 * (a[6] + a[8])
+    a[6] = signed_angle_between_plane_and_vector(
+        joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], y_dir
+    ) * -1.2 + 0.2
+    # a[6] = angle_between_vectors(joint_pos[13] - joint_pos[16], joint_pos[9] - joint_pos[12]) * -2 + 0.3
+    a[9] = signed_angle_between_vectors(joint_pos[15] - joint_pos[14], joint_pos[16] - joint_pos[15], z_dir) - 0.3
+    a[7] = signed_angle_between_vectors(joint_pos[14] - joint_pos[13], joint_pos[15] - joint_pos[14], z_dir) + 0.2
+    a[8] = 0.5 * (a[7] + a[9])
 
     a = a.astype(np.float32)
     # ---- End inlined copy ----
