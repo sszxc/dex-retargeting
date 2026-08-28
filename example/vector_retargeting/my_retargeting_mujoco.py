@@ -18,7 +18,7 @@ from pynput import keyboard
 
 from mujoco_control import MujocoHandController, read_finger_qpos
 from retarget_worker import run_retarget_worker
-from runtime_config import RuntimeConfig, SimulationConfig, load_runtime_config
+from runtime_config import RuntimeConfig, SHAPE_SIZE_LEN, SimulationConfig, load_runtime_config
 from state_publisher import HandStatePublisher
 
 
@@ -142,6 +142,16 @@ def _make_viewer_state_snapshot(model: mujoco.MjModel, data: mujoco.MjData) -> d
         "mocap_quat": np.asarray(data.mocap_quat).copy(),
         "body_pos": np.asarray(model.body_pos).copy(),
         "site_pos": np.asarray(model.site_pos).copy(),
+        # Mutated in-place by `_apply_random_object_shape` (shape/size/color randomization
+        # of the pick object) -- must be forwarded too, or secondary viewers keep showing
+        # the old shape/size/color even though the object's pose (qpos, above) does update.
+        "geom_type": np.asarray(model.geom_type).copy(),
+        "geom_size": np.asarray(model.geom_size).copy(),
+        "geom_rgba": np.asarray(model.geom_rgba).copy(),
+        "body_mass": np.asarray(model.body_mass).copy(),
+        "body_inertia": np.asarray(model.body_inertia).copy(),
+        "body_ipos": np.asarray(model.body_ipos).copy(),
+        "body_iquat": np.asarray(model.body_iquat).copy(),
     }
 
 
@@ -157,6 +167,13 @@ def _apply_viewer_state_snapshot(
         data.mocap_quat[:] = snapshot["mocap_quat"]
     model.body_pos[:] = snapshot["body_pos"]
     model.site_pos[:] = snapshot["site_pos"]
+    model.geom_type[:] = snapshot["geom_type"]
+    model.geom_size[:] = snapshot["geom_size"]
+    model.geom_rgba[:] = snapshot["geom_rgba"]
+    model.body_mass[:] = snapshot["body_mass"]
+    model.body_inertia[:] = snapshot["body_inertia"]
+    model.body_ipos[:] = snapshot["body_ipos"]
+    model.body_iquat[:] = snapshot["body_iquat"]
     mujoco.mj_forward(model, data)
 
 
@@ -354,6 +371,170 @@ def _randomize_obj_goal_pose(
     return updated
 
 
+_SHAPE_NAME_TO_MJTGEOM = {
+    "box": mujoco.mjtGeom.mjGEOM_BOX,
+    "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
+    "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
+    "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
+}
+
+
+def _shape_z_half_extent(shape_name: str, size: np.ndarray) -> float:
+    """Local +z half-extent of a resting primitive, i.e. how far its center must sit
+    above the table surface so its bottom just touches it."""
+    if shape_name == "box":
+        return float(size[2])
+    if shape_name == "sphere":
+        return float(size[0])
+    if shape_name == "cylinder":
+        return float(size[1])
+    if shape_name == "capsule":
+        return float(size[1]) + float(size[0])
+    raise ValueError(f"Unsupported shape '{shape_name}'")
+
+
+def _shape_mass_and_diag_inertia(
+    shape_name: str, size: np.ndarray, density: float
+) -> tuple[float, np.ndarray]:
+    """Exact analytic mass + principal (diagonal) inertia for a uniform-density primitive,
+    centered at the geom's own origin. Verified numerically to match MuJoCo's own compiler
+    output bit-for-bit (`MjModel.from_xml_string` with `density=...`) for all four shapes.
+
+    This is needed because mutating `geom_type`/`geom_size` on an already-compiled model
+    does NOT update `body_mass`/`body_inertia` for us -- confirmed empirically that even
+    `mj_setConst` leaves them untouched (it only recomputes qpos0-dependent constants,
+    e.g. tendon lengths), so we compute and assign them ourselves every time the shape
+    changes.
+    """
+    if shape_name == "box":
+        sx, sy, sz = float(size[0]), float(size[1]), float(size[2])
+        a, b, c = 2 * sx, 2 * sy, 2 * sz
+        m = density * a * b * c
+        return m, np.array(
+            [m * (b**2 + c**2) / 12.0, m * (a**2 + c**2) / 12.0, m * (a**2 + b**2) / 12.0]
+        )
+    if shape_name == "sphere":
+        r = float(size[0])
+        m = density * (4.0 / 3.0) * np.pi * r**3
+        i = (2.0 / 5.0) * m * r**2
+        return m, np.array([i, i, i])
+    if shape_name == "cylinder":
+        r, h = float(size[0]), float(size[1])
+        m = density * np.pi * r**2 * (2 * h)
+        izz = 0.5 * m * r**2
+        ixx = m * (3 * r**2 + (2 * h) ** 2) / 12.0
+        return m, np.array([ixx, ixx, izz])
+    if shape_name == "capsule":
+        r, h = float(size[0]), float(size[1])
+        m_cyl = density * np.pi * r**2 * (2 * h)
+        m_hemi = density * (2.0 / 3.0) * np.pi * r**3  # one hemispherical cap
+        m = m_cyl + 2 * m_hemi
+        izz = 0.5 * m_cyl * r**2 + 2 * (2.0 / 5.0) * m_hemi * r**2
+        ixx_cyl = m_cyl * (3 * r**2 + (2 * h) ** 2) / 12.0
+        ixx_hemi_own = (83.0 / 320.0) * m_hemi * r**2  # about the hemisphere's own centroid
+        d = h + 3 * r / 8.0  # centroid offset of each cap from the capsule's own center
+        ixx = ixx_cyl + 2 * (ixx_hemi_own + m_hemi * d**2)
+        return m, np.array([ixx, ixx, izz])
+    raise ValueError(f"Unsupported shape '{shape_name}'")
+
+
+def _apply_random_object_shape(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    runtime_cfg: RuntimeConfig,
+    force_shape_name: Optional[str] = None,
+) -> Optional[dict]:
+    """Randomize the pick object's shape/size/color/pose in place (mutating the already-
+    compiled model -- no XML recompile, so it fits the same 'r' key / startup reset path
+    as `_randomize_obj_goal_pose`).
+
+    Draws only from `train_shapes` by default, so `held_out_shape` never appears during
+    normal data collection. Pass force_shape_name (e.g. the held-out shape's name) to
+    deliberately collect/preview an eval set with one specific shape instead.
+
+    Returns metadata about what was sampled (for episode bookkeeping), or None if this
+    feature is disabled for the currently loaded task/xml (i.e. any task other than pick,
+    where `simulation.random_object_shape` is simply absent from the yml).
+    """
+    cfg = runtime_cfg.simulation.random_object_shape
+    if not cfg.enabled:
+        return None
+
+    shapes_by_name = cfg.all_shapes_by_name
+    if force_shape_name is not None:
+        if force_shape_name not in shapes_by_name:
+            raise ValueError(
+                f"--force-shape '{force_shape_name}' is not defined in random_object_shape "
+                f"(known: {sorted(shapes_by_name)})"
+            )
+        shape = shapes_by_name[force_shape_name]
+    else:
+        shape = cfg.train_shapes[int(np.random.randint(len(cfg.train_shapes)))]
+
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cfg.body_name)
+    geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, cfg.geom_name)
+    if body_id < 0 or geom_id < 0:
+        logger.warning(
+            f"random_object_shape: body '{cfg.body_name}' or geom '{cfg.geom_name}' not found; skipping"
+        )
+        return None
+
+    size = np.array([np.random.uniform(lo, hi) for lo, hi in shape.size_ranges], dtype=np.float64)
+    assert size.shape[0] == SHAPE_SIZE_LEN[shape.name]
+    full_size = np.zeros(3, dtype=np.float64)
+    full_size[: size.shape[0]] = size
+
+    model.geom_type[geom_id] = int(_SHAPE_NAME_TO_MJTGEOM[shape.name])
+    model.geom_size[geom_id] = full_size
+    if cfg.randomize_color:
+        model.geom_rgba[geom_id] = [
+            np.random.uniform(0.15, 0.95),
+            np.random.uniform(0.15, 0.95),
+            np.random.uniform(0.15, 0.95),
+            1.0,
+        ]
+
+    mass, diag_inertia = _shape_mass_and_diag_inertia(shape.name, size, cfg.density)
+    model.body_mass[body_id] = mass
+    model.body_inertia[body_id] = diag_inertia
+    # The geom sits at the body's own local origin in the pick scene XML, so the inertial
+    # frame stays centered there regardless of which shape/size is currently active.
+    model.body_ipos[body_id] = [0.0, 0.0, 0.0]
+    model.body_iquat[body_id] = [1.0, 0.0, 0.0, 0.0]
+
+    xy = np.array(
+        [np.random.uniform(*cfg.position_ranges[0]), np.random.uniform(*cfg.position_ranges[1])],
+        dtype=np.float64,
+    )
+    z = cfg.table_z + _shape_z_half_extent(shape.name, size)
+    yaw = np.random.uniform(cfg.yaw_range[0], cfg.yaw_range[1])
+    quat = np.array([np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)], dtype=np.float64)
+
+    body_joint_num = int(model.body_jntnum[body_id])
+    body_joint_adr = int(model.body_jntadr[body_id])
+    if body_joint_num < 1 or model.jnt_type[body_joint_adr] != mujoco.mjtJoint.mjJNT_FREE:
+        logger.warning(
+            f"random_object_shape: body '{cfg.body_name}' has no free joint; skipping pose randomization"
+        )
+    else:
+        qadr = int(model.jnt_qposadr[body_joint_adr])
+        dadr = int(model.jnt_dofadr[body_joint_adr])
+        data.qpos[qadr : qadr + 3] = [xy[0], xy[1], z]
+        data.qpos[qadr + 3 : qadr + 7] = quat
+        data.qvel[dadr : dadr + 6] = 0.0
+
+    mujoco.mj_forward(model, data)
+
+    info = {
+        "shape": shape.name,
+        "size": size.tolist(),
+        "position": [float(xy[0]), float(xy[1]), float(z)],
+        "yaw": float(yaw),
+    }
+    logger.info(f"Randomized pick object: {info}")
+    return info
+
+
 def _apply_task_reset_joint(
     model: mujoco.MjModel, data: mujoco.MjData, sim: SimulationConfig
 ) -> bool:
@@ -489,11 +670,17 @@ def _sync_mocap_to_startup_pose(
 
 
 def _reset_randomized_env(
-    model: mujoco.MjModel, data: mujoco.MjData, runtime_cfg: RuntimeConfig
-) -> bool:
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    runtime_cfg: RuntimeConfig,
+    force_shape_name: Optional[str] = None,
+) -> tuple[bool, Optional[dict]]:
     randomized = _randomize_obj_goal_pose(model, data, runtime_cfg)
     joint_reset = _apply_task_reset_joint(model, data, runtime_cfg.simulation)
-    return randomized or joint_reset
+    shape_info = _apply_random_object_shape(
+        model, data, runtime_cfg, force_shape_name=force_shape_name
+    )
+    return (randomized or joint_reset or shape_info is not None), shape_info
 
 
 def main(
@@ -503,7 +690,17 @@ def main(
     stop_key: str = "e",
     track_key: str = "t",
     viewer_count: int = DEFAULT_VIEWER_COUNT,
+    force_shape: Optional[str] = None,
 ):
+    """
+    Args:
+        force_shape: Only meaningful when the loaded task's `simulation.random_object_shape`
+            is enabled (e.g. the pick task). If set, every reset uses exactly this shape
+            instead of sampling from `train_shapes` -- pass the `held_out_shape` name
+            (e.g. "capsule") to deliberately collect/preview an unseen-shape eval set,
+            or a train shape's name to spot-check just that one. Leave unset for normal
+            training-data collection, which draws only from `train_shapes`.
+    """
     runtime_cfg: RuntimeConfig = load_runtime_config(runtime_config_path)
     logger.info(
         f"Loaded config: input_source={runtime_cfg.sensor.input_source}, mode={runtime_cfg.retargeting.mode}"
@@ -540,7 +737,9 @@ def main(
     if _apply_startup_joint_qpos(model, data, runtime_cfg.simulation):
         _sync_mocap_to_startup_pose(model, data, controller)
 
-    _reset_randomized_env(model, data, runtime_cfg)
+    _, latest_object_info = _reset_randomized_env(
+        model, data, runtime_cfg, force_shape_name=force_shape
+    )
 
     initial_root_position_offset = np.asarray(
         runtime_cfg.simulation.root_position_offset, dtype=np.float64
@@ -605,6 +804,10 @@ def main(
     is_recording = False
     episode_idx = 0
     episode_buffers: Optional[dict[str, list]] = None
+    # Object shape/size/pose sampled at the moment recording started for the in-progress
+    # episode (snapshotted here rather than read at save time, in case a stray 'r' press
+    # re-randomizes the object again before the episode is stopped and saved).
+    episode_object_info: Optional[dict] = None
 
     dataset_root = Path(dataset_dir)
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
@@ -624,7 +827,9 @@ def main(
             buffers[f"/observations/images/{cam}"] = []
         return buffers
 
-    def save_episode(buffers: dict[str, list], idx: int) -> None:
+    def save_episode(
+        buffers: dict[str, list], idx: int, object_info: Optional[dict] = None
+    ) -> None:
         if not buffers["/action"]:
             logger.warning(f"Episode {idx} has no steps; skipping save.")
             return
@@ -652,6 +857,15 @@ def main(
             root.attrs["sim"] = True
             root.attrs["mj_xml_path"] = str(mj_xml_path)
             root.attrs["scene"] = mj_xml_path.stem
+            if runtime_cfg.simulation.task_name:
+                root.attrs["task_name"] = runtime_cfg.simulation.task_name
+            if object_info is not None:
+                root.attrs["object_shape"] = object_info["shape"]
+                root.attrs["object_size"] = np.asarray(object_info["size"], dtype=np.float64)
+                root.attrs["object_position"] = np.asarray(
+                    object_info["position"], dtype=np.float64
+                )
+                root.attrs["object_yaw"] = float(object_info["yaw"])
 
             obs = root.create_group("observations")
             image_group = obs.create_group("images")
@@ -737,7 +951,8 @@ def main(
     keyboard_listener.start()
     logger.info(
         f"Keyboard listener started: '{start_key}' start recording, '{stop_key}' stop and save, "
-        f"'r' randomize obj/goal, '{track_key}' toggle wrist TRANSLATION tracking to camera "
+        f"'r' randomize obj/goal (and shape/size/color when random_object_shape is enabled), "
+        f"'{track_key}' toggle wrist TRANSLATION tracking to camera "
         f"hand position (offset recomputed each time it turns on, so it resumes without a "
         f"jump; rotation always tracks via the config's static wrist_rotation_offset_rpy), "
         f"'a' (when hand detected) nudge root_position_offset along palm→obj, 'q' quit"
@@ -927,6 +1142,7 @@ def main(
 
             pending_buffers = None
             pending_episode_idx = None
+            pending_object_info = None
             do_randomize = False
             with keyboard_lock:
                 if randomize_requested:
@@ -949,6 +1165,7 @@ def main(
                     randomize_requested = False
                 elif record_start_requested:
                     episode_buffers = init_episode_buffers()
+                    episode_object_info = latest_object_info
                     is_recording = True
                     record_start_requested = False
                     logger.info(f"Started recording episode_{episode_idx}")
@@ -956,14 +1173,19 @@ def main(
                     if episode_buffers is not None:
                         pending_buffers = episode_buffers
                         pending_episode_idx = episode_idx
+                        pending_object_info = episode_object_info
                         episode_idx += 1
                         episode_buffers = None
                     is_recording = False
                     record_stop_requested = False
             if pending_buffers is not None and pending_episode_idx is not None:
-                save_episode(pending_buffers, pending_episode_idx)
+                save_episode(pending_buffers, pending_episode_idx, pending_object_info)
             if do_randomize:
-                _reset_randomized_env(model, data, runtime_cfg)
+                _, shape_info = _reset_randomized_env(
+                    model, data, runtime_cfg, force_shape_name=force_shape
+                )
+                if shape_info is not None:
+                    latest_object_info = shape_info
 
             _publish_viewer_state(
                 secondary_viewer_queues, _make_viewer_state_snapshot(model, data)

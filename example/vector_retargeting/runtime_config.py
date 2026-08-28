@@ -12,6 +12,16 @@ VALID_INPUT_SOURCES = {"webcam", "leap_motion", "test_sine"}
 VALID_MODES = {"single_left", "single_right", "bimanual"}
 VALID_OPTIMIZERS = {"vector", "position", "dexpilot", "joint", "dex"}
 
+# Number of `size` numbers each MuJoCo primitive geom expects (box: half-extents xyz,
+# sphere: radius, cylinder/capsule: radius + half-length). Shared with
+# my_retargeting_mujoco.py's random_object_shape application so the two stay in sync.
+SHAPE_SIZE_LEN: Dict[str, int] = {
+    "box": 3,
+    "sphere": 1,
+    "cylinder": 2,
+    "capsule": 2,
+}
+
 
 def _identity_3x3() -> List[List[float]]:
     return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -186,6 +196,97 @@ class RandomObjGoalConfig:
 
 
 @dataclass
+class ShapeSpec:
+    """One sampleable primitive geom: name is a MuJoCo geom type, size_ranges is a list
+    of [min, max] pairs (one per `SHAPE_SIZE_LEN[name]` size component)."""
+
+    name: str
+    size_ranges: List[List[float]]
+
+    def validate(self, context: str) -> None:
+        if self.name not in SHAPE_SIZE_LEN:
+            raise ValueError(f"{context}.name must be one of {sorted(SHAPE_SIZE_LEN)}")
+        expected_len = SHAPE_SIZE_LEN[self.name]
+        arr = np.asarray(self.size_ranges, dtype=np.float64)
+        if arr.shape != (expected_len, 2):
+            raise ValueError(
+                f"{context}.size_ranges must be {expected_len} [min,max] pair(s) for shape "
+                f"'{self.name}', got shape {arr.shape}"
+            )
+        if not np.all(np.isfinite(arr)) or np.any(arr <= 0) or np.any(arr[:, 0] > arr[:, 1]):
+            raise ValueError(f"{context}.size_ranges must contain positive, finite min<=max pairs")
+
+
+@dataclass
+class RandomObjectShapeConfig:
+    """Per-episode randomization of the pick object's shape/size/color/pose, applied by
+    mutating the already-compiled MjModel in place (geom_type/geom_size/geom_rgba,
+    body_mass/body_inertia, and the free joint's qpos) -- no XML recompile needed.
+
+    `train_shapes` is what gets sampled during normal data collection; `held_out_shape`
+    is defined but never drawn automatically, so it can be reserved as an unseen-shape
+    test set and only used by explicitly passing `--force-shape <held_out name>`.
+    """
+
+    enabled: bool = False
+    body_name: str = "obj"
+    geom_name: str = "objGeom"
+    table_z: float = 0.6
+    position_ranges: List[List[float]] = field(default_factory=lambda: [[-0.2, 0.2], [0.5, 0.8]])
+    yaw_range: List[float] = field(default_factory=lambda: [-3.141592653589793, 3.141592653589793])
+    density: float = 700.0
+    randomize_color: bool = True
+    train_shapes: List[ShapeSpec] = field(default_factory=list)
+    held_out_shape: Optional[ShapeSpec] = None
+
+    @property
+    def all_shapes_by_name(self) -> Dict[str, ShapeSpec]:
+        out = {s.name: s for s in self.train_shapes}
+        if self.held_out_shape is not None:
+            out[self.held_out_shape.name] = self.held_out_shape
+        return out
+
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        if not str(self.body_name).strip():
+            raise ValueError("simulation.random_object_shape.body_name cannot be empty")
+        if not str(self.geom_name).strip():
+            raise ValueError("simulation.random_object_shape.geom_name cannot be empty")
+        arr = np.asarray(self.position_ranges, dtype=np.float64)
+        if arr.shape != (2, 2):
+            raise ValueError(
+                "simulation.random_object_shape.position_ranges must be [[xmin,xmax],[ymin,ymax]]"
+            )
+        if not np.all(np.isfinite(arr)) or np.any(arr[:, 0] > arr[:, 1]):
+            raise ValueError(
+                "simulation.random_object_shape.position_ranges has min > max for some axis"
+            )
+        yaw = np.asarray(self.yaw_range, dtype=np.float64).reshape(-1)
+        if yaw.size != 2 or not np.all(np.isfinite(yaw)) or yaw[0] > yaw[1]:
+            raise ValueError("simulation.random_object_shape.yaw_range must be [min,max], min<=max")
+        if not np.isfinite(self.density) or self.density <= 0:
+            raise ValueError("simulation.random_object_shape.density must be a positive finite number")
+        if not self.train_shapes:
+            raise ValueError("simulation.random_object_shape.train_shapes cannot be empty when enabled")
+        names_seen: set = set()
+        for i, shape in enumerate(self.train_shapes):
+            shape.validate(f"simulation.random_object_shape.train_shapes[{i}]")
+            if shape.name in names_seen:
+                raise ValueError(
+                    f"simulation.random_object_shape.train_shapes has duplicate name '{shape.name}'"
+                )
+            names_seen.add(shape.name)
+        if self.held_out_shape is not None:
+            self.held_out_shape.validate("simulation.random_object_shape.held_out_shape")
+            if self.held_out_shape.name in names_seen:
+                raise ValueError(
+                    "simulation.random_object_shape.held_out_shape.name must differ from every "
+                    "train_shapes name (it is meant to stay unseen during data collection)"
+                )
+
+
+@dataclass
 class TaskResetJointConfig:
     enabled: bool = False
     name: Optional[str] = None
@@ -296,6 +397,9 @@ class SimulationConfig:
     # mocap.wrist_mocap is enabled, the mocap target is auto-synced (via the model's
     # <equality><weld> partner body) so the weld constraint doesn't immediately pull it away.
     startup_joint_qpos: Optional[Dict[str, float]] = None
+    # Free-form label recorded into each saved episode's HDF5 attrs (e.g. "pick"); purely
+    # for dataset bookkeeping, does not affect simulation behavior.
+    task_name: Optional[str] = None
     control_hand: str = "left"
     root_ctrl_indices: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
     finger_ctrl_indices: List[int] = field(
@@ -312,6 +416,7 @@ class SimulationConfig:
     control_rate_hz: float = 60.0
     mocap: MocapConfig = field(default_factory=MocapConfig)
     random_obj_goal: RandomObjGoalConfig = field(default_factory=RandomObjGoalConfig)
+    random_object_shape: RandomObjectShapeConfig = field(default_factory=RandomObjectShapeConfig)
     task_reset_joint: TaskResetJointConfig = field(default_factory=TaskResetJointConfig)
     assist_near_object: AssistNearObjectConfig = field(default_factory=AssistNearObjectConfig)
     viewer_camera: Optional[PassiveViewerCameraConfig] = None
@@ -366,6 +471,7 @@ class SimulationConfig:
         if self.control_rate_hz <= 0:
             raise ValueError("simulation.control_rate_hz must be > 0")
         self.random_obj_goal.validate()
+        self.random_object_shape.validate()
         self.task_reset_joint.validate()
         self.assist_near_object.validate()
         if self.viewer_camera is not None:
@@ -497,6 +603,55 @@ def _parse_random_obj_goal(raw: Dict[str, Any]) -> RandomObjGoalConfig:
     return RandomObjGoalConfig(targets=targets)
 
 
+def _parse_shape_spec(item: Dict[str, Any], context: str) -> ShapeSpec:
+    if not isinstance(item, dict):
+        raise ValueError(f"{context} must be a mapping")
+    if "name" not in item:
+        raise ValueError(f"{context}.name is required")
+    if "size_ranges" not in item:
+        raise ValueError(f"{context}.size_ranges is required")
+    return ShapeSpec(
+        name=str(item["name"]).strip(),
+        size_ranges=[list(r) for r in item["size_ranges"]],
+    )
+
+
+def _parse_random_object_shape(raw: Dict[str, Any]) -> RandomObjectShapeConfig:
+    block = raw.get("random_object_shape")
+    if block is None or block is False:
+        return RandomObjectShapeConfig(enabled=False)
+    if not isinstance(block, dict):
+        raise ValueError("simulation.random_object_shape must be a mapping, false, or omitted")
+
+    train_raw = block.get("train_shapes", [])
+    if not isinstance(train_raw, list):
+        raise ValueError("simulation.random_object_shape.train_shapes must be a list")
+    train_shapes = [
+        _parse_shape_spec(item, f"simulation.random_object_shape.train_shapes[{i}]")
+        for i, item in enumerate(train_raw)
+    ]
+
+    held_out_raw = block.get("held_out_shape")
+    held_out_shape = (
+        _parse_shape_spec(held_out_raw, "simulation.random_object_shape.held_out_shape")
+        if held_out_raw is not None
+        else None
+    )
+
+    return RandomObjectShapeConfig(
+        enabled=bool(block.get("enabled", False)),
+        body_name=str(block.get("body_name", "obj")),
+        geom_name=str(block.get("geom_name", "objGeom")),
+        table_z=float(block.get("table_z", 0.6)),
+        position_ranges=[list(r) for r in block.get("position_ranges", [[-0.2, 0.2], [0.5, 0.8]])],
+        yaw_range=list(block.get("yaw_range", [-3.141592653589793, 3.141592653589793])),
+        density=float(block.get("density", 700.0)),
+        randomize_color=bool(block.get("randomize_color", True)),
+        train_shapes=train_shapes,
+        held_out_shape=held_out_shape,
+    )
+
+
 def _parse_optional_vec(raw: Dict[str, Any], key: str, length: int) -> Optional[List[float]]:
     value = raw.get(key)
     if value is None:
@@ -559,6 +714,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
             else None
         ),
         startup_joint_qpos=_parse_startup_joint_qpos(raw),
+        task_name=(str(raw["task_name"]).strip() if raw.get("task_name") is not None else None),
         control_hand=str(raw.get("control_hand", "left")),
         root_ctrl_indices=list(raw.get("root_ctrl_indices", [0, 1, 2, 3, 4, 5])),
         finger_ctrl_indices=list(
@@ -576,6 +732,7 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
         control_rate_hz=float(raw.get("control_rate_hz", 60.0)),
         mocap=mocap,
         random_obj_goal=random_obj_goal,
+        random_object_shape=_parse_random_object_shape(raw),
         task_reset_joint=_parse_task_reset_joint(raw),
         assist_near_object=assist_near_object,
         viewer_camera=_parse_passive_viewer_camera(raw),

@@ -57,26 +57,54 @@ simulation:
   #     - [-0.3, 0.3]
   #     - [0.5, 0.8]
   #     - [0.7, 0.9]
-  # ------- task: drawer -------
-  mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_drawer.xml
+  # ------- task: pick (no goal -- just pick up and hold; shape/size/color/position of
+  #                     `obj` are randomized every episode/reset by Python, not by MJCF) -------
+  mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_pick.xml
   startup_keyframe: home
-  random_obj_goal:
-    - name: drawer
-      type: body
-      position_ranges:
-      - [-0.2, 0.2]
-      - [0.8, 1.0]
-      - [0.6, 0.6]
-    - name: goal
-      type: site
-      position_ranges:
-      - [-0.3, 0.3]
-      - [0.5, 0.8]
-      - [0.7, 0.9]
-  task_reset_joint:
+  task_name: pick
+  random_object_shape:
     enabled: true
-    name: goal_slidey
-    value: 0.0
+    body_name: obj
+    geom_name: objGeom
+    table_z: 0.6
+    position_ranges: [[-0.2, 0.2], [0.6, 0.9]]   # xy only; z is derived per-shape/size so it always rests on the table
+    yaw_range: [-3.14159, 3.14159]
+    density: 700
+    randomize_color: false
+    train_shapes:            # sampled every episode/reset -- what the policy actually trains on
+      - name: box
+        size_ranges: [[0.025, 0.04], [0.025, 0.04], [0.04, 0.07]]     # half-extents x,y,z
+      - name: cylinder
+        size_ranges: [[0.025, 0.04], [0.04, 0.07]]                    # radius, half-height
+      - name: sphere
+        size_ranges: [[0.035, 0.05]]                                  # radius
+    held_out_shape:          # never sampled automatically -- reserved as an unseen-shape
+                             # eval/test set; collect it deliberately with --force-shape capsule
+      name: capsule
+      size_ranges: [[0.025, 0.04], [0.04, 0.07]]                      # radius, half-length
+  # NOTE when switching to this task: assist_near_object (below) is shared across all
+  # tasks in this file and is currently pointed at obj_body_name: ball (left over from
+  # basketball) -- change it to `obj` to keep the 'a' assist key working for pick.
+  # ------- task: drawer -------
+  # mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_drawer.xml
+  # startup_keyframe: home
+  # random_obj_goal:
+  #   - name: drawer
+  #     type: body
+  #     position_ranges:
+  #     - [-0.2, 0.2]
+  #     - [0.8, 1.0]
+  #     - [0.6, 0.6]
+  #   - name: goal
+  #     type: site
+  #     position_ranges:
+  #     - [-0.3, 0.3]
+  #     - [0.5, 0.8]
+  #     - [0.7, 0.9]
+  # task_reset_joint:
+  #   enabled: true
+  #   name: goal_slidey
+  #   value: 0.0
   # ------- task: basketball -------
   # mj_xml_path: /home/lab/Documents/proto5_description/mjcf/hmf_hand_proto5_release_right_ur7e_scene_basketball.xml
   # startup_keyframe: home
@@ -130,7 +158,7 @@ simulation:
   # World-frame AABB after offset; omit both to disable clipping.
   # wrist_pos_min: [-0.4, 0.6, 0.7]
   # wrist_pos_max: [0.4, 0.8, 0.9]
-  wrist_rotation_offset_rpy: [1.57, 0, -2.5]
+  wrist_rotation_offset_rpy: [1.57, 0.3, -2.5]
   joint_indices:
   - 0
   - 1
@@ -156,7 +184,7 @@ simulation:
   - 21
   - 22
   - 23
-  camera_names: [topview, corner]
+  camera_names: [rhand_palm_right_cam, corner]
   # Passive MuJoCo viewer (launch_passive); omit viewer_camera to keep viewer defaults.
   viewer_camera:
     lookat: [0.0, 0.6, 0.6]
