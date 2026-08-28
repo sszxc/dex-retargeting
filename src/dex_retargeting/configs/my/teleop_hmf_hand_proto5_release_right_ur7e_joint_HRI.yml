@@ -131,9 +131,12 @@ simulation:
     RArm_wrist_3_joint: 0.13496923446655273
   root_position_offset: [0.0, 0.6, 0.55]
   # World-frame AABB after offset; omit both to disable clipping.
-  wrist_pos_min: [-0.57, 0.45, 0.85]
+  wrist_pos_min: [-0.57, 0.45, 0.75]
   wrist_pos_max: [0.57, 1.2, 1.4]
   wrist_rotation_offset_rpy: [1.57, 0, -2.5]
+  fingertip_body_names: [RHand_ITIP_LINK, RHand_MTIP_LINK, RHand_RTIP_LINK, RHand_TTIP_LINK]
+  fingertips_pos_min: [-0.63, 0.55, 0.7]
+  fingertips_pos_max: [0.63, 1.25, 1.45]
   joint_indices:
   - 0
   - 1

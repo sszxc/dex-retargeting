@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 import time
 
@@ -65,12 +65,152 @@ def read_finger_qpos(
     return np.asarray(values, dtype=np.float64)
 
 
+def _project_fingertip_translation(
+    requested_pos: np.ndarray,
+    fingertip_offsets: np.ndarray,
+    fingertips_pos_min: np.ndarray,
+    fingertips_pos_max: np.ndarray,
+    wrist_pos_min: Optional[np.ndarray] = None,
+    wrist_pos_max: Optional[np.ndarray] = None,
+) -> Optional[np.ndarray]:
+    """Project a wrist target onto the translations that keep every tip in bounds."""
+    requested = np.asarray(requested_pos, dtype=np.float64).reshape(3)
+    offsets = np.asarray(fingertip_offsets, dtype=np.float64).reshape(-1, 3)
+    tip_lo = np.asarray(fingertips_pos_min, dtype=np.float64).reshape(3)
+    tip_hi = np.asarray(fingertips_pos_max, dtype=np.float64).reshape(3)
+    if (
+        offsets.shape[0] == 0
+        or not np.all(np.isfinite(requested))
+        or not np.all(np.isfinite(offsets))
+    ):
+        return None
+
+    # For every tip i, tip_lo <= wrist + offset_i <= tip_hi. Intersect all
+    # per-tip intervals, then intersect the result with the optional wrist AABB.
+    allowed_lo = np.max(tip_lo[None, :] - offsets, axis=0)
+    allowed_hi = np.min(tip_hi[None, :] - offsets, axis=0)
+    if wrist_pos_min is not None:
+        allowed_lo = np.maximum(
+            allowed_lo, np.asarray(wrist_pos_min, dtype=np.float64).reshape(3)
+        )
+    if wrist_pos_max is not None:
+        allowed_hi = np.minimum(
+            allowed_hi, np.asarray(wrist_pos_max, dtype=np.float64).reshape(3)
+        )
+    if not np.all(np.isfinite(allowed_lo)) or not np.all(np.isfinite(allowed_hi)):
+        return None
+    if np.any(allowed_lo > allowed_hi):
+        return None
+    return np.clip(requested, allowed_lo, allowed_hi)
+
+
 @dataclass
 class MujocoHandController:
     simulation: SimulationConfig
     model: mujoco.MjModel
     _resolved_mocap_id: Optional[int] = None
     _last_diag_log_time: float = 0.0
+    _last_safety_warning_time: float = 0.0
+    _fingertip_body_ids: Optional[np.ndarray] = field(
+        default=None, init=False, repr=False
+    )
+    _weld_partner_body_id: Optional[int] = field(
+        default=None, init=False, repr=False
+    )
+    _finger_qpos_addresses: Optional[np.ndarray] = field(
+        default=None, init=False, repr=False
+    )
+    _prediction_data: Optional[mujoco.MjData] = field(
+        default=None, init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.simulation.fingertip_body_names is None:
+            return
+        if (
+            self.simulation.fingertips_pos_min is None
+            or self.simulation.fingertips_pos_max is None
+        ):
+            raise ValueError(
+                "fingertip_body_names requires fingertips_pos_min and "
+                "fingertips_pos_max"
+            )
+        if not self.simulation.mocap.wrist_mocap:
+            raise ValueError("fingertip bounds require wrist_mocap=True")
+
+        mocap_id = self._resolve_mocap_id()
+        if mocap_id is None:
+            raise ValueError("fingertip bounds require a resolvable mocap body")
+        mocap_body_matches = np.flatnonzero(
+            np.asarray(self.model.body_mocapid, dtype=np.int64) == mocap_id
+        )
+        if mocap_body_matches.size != 1:
+            raise ValueError(
+                f"could not uniquely resolve body for mocap id {mocap_id}"
+            )
+        mocap_body_id = int(mocap_body_matches[0])
+
+        for eq_id in range(self.model.neq):
+            if self.model.eq_type[eq_id] != mujoco.mjtEq.mjEQ_WELD:
+                continue
+            obj1 = int(self.model.eq_obj1id[eq_id])
+            obj2 = int(self.model.eq_obj2id[eq_id])
+            if obj1 == mocap_body_id:
+                self._weld_partner_body_id = obj2
+                break
+            if obj2 == mocap_body_id:
+                self._weld_partner_body_id = obj1
+                break
+        if self._weld_partner_body_id is None:
+            mocap_name = mujoco.mj_id2name(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, mocap_body_id
+            )
+            raise ValueError(
+                f"fingertip bounds require mocap body '{mocap_name}' to have an "
+                "equality weld partner"
+            )
+
+        body_ids = []
+        missing_names = []
+        for body_name in self.simulation.fingertip_body_names:
+            body_id = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, body_name
+            )
+            if body_id < 0:
+                missing_names.append(body_name)
+            else:
+                body_ids.append(body_id)
+        if missing_names:
+            raise ValueError(
+                "configured fingertip bodies not found in MuJoCo model: "
+                + ", ".join(missing_names)
+            )
+        self._fingertip_body_ids = np.asarray(body_ids, dtype=np.int64)
+
+        qpos_addresses = []
+        for actuator_id in self.simulation.finger_ctrl_indices:
+            if actuator_id < 0 or actuator_id >= self.model.nu:
+                raise ValueError(
+                    f"finger actuator index {actuator_id} is outside model "
+                    "actuator range"
+                )
+            joint_id = int(self.model.actuator_trnid[int(actuator_id), 0])
+            if joint_id < 0:
+                raise ValueError(
+                    f"finger actuator {actuator_id} is not attached to a joint"
+                )
+            joint_type = self.model.jnt_type[joint_id]
+            if joint_type not in (
+                mujoco.mjtJoint.mjJNT_HINGE,
+                mujoco.mjtJoint.mjJNT_SLIDE,
+            ):
+                raise ValueError(
+                    f"finger actuator {actuator_id} must drive a scalar hinge or "
+                    "slide joint"
+                )
+            qpos_addresses.append(int(self.model.jnt_qposadr[joint_id]))
+        self._finger_qpos_addresses = np.asarray(qpos_addresses, dtype=np.int64)
+        self._prediction_data = mujoco.MjData(self.model)
 
     def _resolve_mocap_id(self) -> Optional[int]:
         if not self.simulation.mocap.wrist_mocap:
@@ -104,6 +244,115 @@ class MujocoHandController:
             np.asarray(lo, dtype=np.float64).reshape(3),
             np.asarray(hi, dtype=np.float64).reshape(3),
         )
+
+    def _predict_fingertip_offsets(
+        self,
+        data: mujoco.MjData,
+        finger_values: np.ndarray,
+        desired_wrist_rotation: np.ndarray,
+    ) -> np.ndarray:
+        """Return commanded fingertip origins relative to the desired wrist target."""
+        if (
+            self._prediction_data is None
+            or self._finger_qpos_addresses is None
+            or self._fingertip_body_ids is None
+            or self._weld_partner_body_id is None
+        ):
+            raise RuntimeError("fingertip bounds were not initialized")
+
+        prediction = self._prediction_data
+        prediction.qpos[:] = data.qpos
+        if self.model.nmocap:
+            prediction.mocap_pos[:] = data.mocap_pos
+            prediction.mocap_quat[:] = data.mocap_quat
+        prediction.qpos[self._finger_qpos_addresses] = finger_values
+        mujoco.mj_forward(self.model, prediction)
+
+        wrist_pos = np.asarray(
+            prediction.xpos[self._weld_partner_body_id], dtype=np.float64
+        ).reshape(3)
+        wrist_rotation = np.asarray(
+            prediction.xmat[self._weld_partner_body_id], dtype=np.float64
+        ).reshape(3, 3)
+        fingertip_pos = np.asarray(
+            prediction.xpos[self._fingertip_body_ids], dtype=np.float64
+        ).reshape(-1, 3)
+        local_offsets = (fingertip_pos - wrist_pos[None, :]) @ wrist_rotation
+        desired_rotation = np.asarray(
+            desired_wrist_rotation, dtype=np.float64
+        ).reshape(3, 3)
+        return local_offsets @ desired_rotation.T
+
+    def _constrain_mocap_translation(
+        self,
+        data: mujoco.MjData,
+        requested_pos: np.ndarray,
+        finger_values: np.ndarray,
+        desired_wrist_rotation: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        offsets = self._predict_fingertip_offsets(
+            data, finger_values, desired_wrist_rotation
+        )
+        wrist_lo = self.simulation.wrist_pos_min
+        wrist_hi = self.simulation.wrist_pos_max
+        return _project_fingertip_translation(
+            requested_pos=requested_pos,
+            fingertip_offsets=offsets,
+            fingertips_pos_min=np.asarray(
+                self.simulation.fingertips_pos_min, dtype=np.float64
+            ),
+            fingertips_pos_max=np.asarray(
+                self.simulation.fingertips_pos_max, dtype=np.float64
+            ),
+            wrist_pos_min=(
+                None if wrist_lo is None else np.asarray(wrist_lo, dtype=np.float64)
+            ),
+            wrist_pos_max=(
+                None if wrist_hi is None else np.asarray(wrist_hi, dtype=np.float64)
+            ),
+        )
+
+    def _warn_infeasible_fingertip_command(self) -> None:
+        now = time.time()
+        if now - self._last_safety_warning_time < 1.0:
+            return
+        self._last_safety_warning_time = now
+        logger.warning(
+            "Rejected hand command: no wrist translation can satisfy both the "
+            "configured fingertip bounds and wrist bounds for this finger pose."
+        )
+
+    def _commit_finger_controls(self, data: mujoco.MjData, values: np.ndarray) -> None:
+        for ctrl_idx, value in zip(self.simulation.finger_ctrl_indices, values):
+            data.ctrl[int(ctrl_idx)] = value
+
+    def _run_finger_diagnostics(self, data: mujoco.MjData) -> None:
+        now = time.time()
+        if now - self._last_diag_log_time <= 1.0:
+            return
+        self._last_diag_log_time = now
+        finger_ctrl = np.asarray(
+            [data.ctrl[int(i)] for i in self.simulation.finger_ctrl_indices],
+            dtype=np.float64,
+        )
+        finger_qpos = []
+        for act_id in self.simulation.finger_ctrl_indices:
+            jnt_id = int(self.model.actuator_trnid[int(act_id), 0])
+            if jnt_id < 0:
+                continue
+            qadr = int(self.model.jnt_qposadr[jnt_id])
+            finger_qpos.append(float(data.qpos[qadr]))
+        finger_qpos_arr = np.asarray(finger_qpos, dtype=np.float64)
+        if finger_qpos_arr.size > 0:
+            # Kept as a cheap periodic calculation for the existing commented-out
+            # control diagnostic below.
+            _ = float(
+                np.mean(
+                    np.abs(
+                        finger_ctrl[: finger_qpos_arr.size] - finger_qpos_arr
+                    )
+                )
+            )
 
     def _engage_translation_tracking_mocap(
         self,
@@ -167,69 +416,64 @@ class MujocoHandController:
         # as long as finger joints are the last n_finger entries.
         finger_values = q[-n_finger:]
 
-        for ctrl_idx, value in zip(self.simulation.finger_ctrl_indices, finger_values):
-            data.ctrl[int(ctrl_idx)] = value
-
-        now = time.time()
-        if now - self._last_diag_log_time > 1.0:
-            self._last_diag_log_time = now
-            finger_ctrl = np.asarray(
-                [data.ctrl[int(i)] for i in self.simulation.finger_ctrl_indices],
-                dtype=np.float64,
-            )
-            finger_qpos = []
-            for act_id in self.simulation.finger_ctrl_indices:
-                jnt_id = int(self.model.actuator_trnid[int(act_id), 0])
-                if jnt_id < 0:
-                    continue
-                qadr = int(self.model.jnt_qposadr[jnt_id])
-                finger_qpos.append(float(data.qpos[qadr]))
-            finger_qpos_arr = np.asarray(finger_qpos, dtype=np.float64)
-            if finger_qpos_arr.size > 0:
-                track_err = float(np.mean(np.abs(finger_ctrl[: finger_qpos_arr.size] - finger_qpos_arr)))
-                qpos_part = (
-                    f" finger_joint_qpos[min,max]=[{float(np.min(finger_qpos_arr)):.4f},{float(np.max(finger_qpos_arr)):.4f}]"
-                    f" mean|ctrl-qpos|={track_err:.4f}"
-                )
-            else:
-                qpos_part = " finger_joint_qpos=n/a"
-            # logger.info(
-            #     f"[control_diag] hand={hand} qdim={q.shape[0]} "
-            #     f"finger_q[min,max]=[{float(np.min(finger_values)):.4f},{float(np.max(finger_values)):.4f}] "
-            #     f"ctrl[min,max]=[{float(np.min(finger_ctrl)):.4f},{float(np.max(finger_ctrl)):.4f}]"
-            #     f"{qpos_part}"
-            # )
-
         if self.simulation.mocap.wrist_mocap:
             mocap_id = self._resolve_mocap_id()
             if mocap_id is None:
+                self._commit_finger_controls(data, finger_values)
+                self._run_finger_diagnostics(data)
                 logger.warning("wrist_mocap=True but mocap id unresolved; skipping wrist output")
                 return
 
             # Rotation always follows the camera hand via the static calibration from
             # config, regardless of track_translation — the 't' key only gates translation.
+            desired_quat = np.asarray(
+                data.mocap_quat[mocap_id], dtype=np.float64
+            ).reshape(4).copy()
             if wrist_quat is not None:
                 r_cal = np.asarray(
                     self.simulation.wrist_rotation_calib_matrix, dtype=np.float64
                 ).reshape(3, 3)
                 quat = np.asarray(wrist_quat, dtype=np.float64).reshape(4)
                 r_w = _quat_wxyz_to_rotmat(quat)
-                data.mocap_quat[mocap_id] = _rotmat_to_quat_wxyz(r_w @ r_cal)
+                desired_quat = _rotmat_to_quat_wxyz(r_w @ r_cal)
 
-            if not track_translation:
-                # Translation tracking toggled off: leave mocap_pos untouched so the
-                # wrist (and whatever it's welded/connected to) freezes in place.
-                return
-            if engage_translation:
+            current_pos = np.asarray(
+                data.mocap_pos[mocap_id], dtype=np.float64
+            ).reshape(3).copy()
+            requested_pos = current_pos
+            if track_translation and engage_translation:
                 self._engage_translation_tracking_mocap(data, mocap_id, wrist_pos)
-
-            pos_off = np.asarray(self.simulation.root_position_offset, dtype=np.float64)
-            if wrist_pos is not None:
-                data.mocap_pos[mocap_id] = self._clip_wrist_pos(
-                    np.asarray(wrist_pos, dtype=np.float64) + pos_off
+            if track_translation and wrist_pos is not None:
+                pos_off = np.asarray(
+                    self.simulation.root_position_offset, dtype=np.float64
                 )
+                requested_pos = np.asarray(
+                    wrist_pos, dtype=np.float64
+                ).reshape(3) + pos_off
+
+            if self._fingertip_body_ids is not None:
+                constrained_pos = self._constrain_mocap_translation(
+                    data=data,
+                    requested_pos=requested_pos,
+                    finger_values=finger_values,
+                    desired_wrist_rotation=_quat_wxyz_to_rotmat(desired_quat),
+                )
+                if constrained_pos is None:
+                    self._warn_infeasible_fingertip_command()
+                    return
+                requested_pos = constrained_pos
+            elif track_translation and wrist_pos is not None:
+                requested_pos = self._clip_wrist_pos(requested_pos)
+
+            # Safety feasibility is established before any live command is changed.
+            self._commit_finger_controls(data, finger_values)
+            data.mocap_quat[mocap_id] = desired_quat
+            data.mocap_pos[mocap_id] = requested_pos
+            self._run_finger_diagnostics(data)
             return
 
+        self._commit_finger_controls(data, finger_values)
+        self._run_finger_diagnostics(data)
         if q.shape[0] >= 6:
             root = q[:6].copy()
 

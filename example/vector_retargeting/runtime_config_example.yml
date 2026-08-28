@@ -54,6 +54,11 @@ simulation:
   # World-frame AABB for wrist target after root_position_offset. Omit both to disable.
   # wrist_pos_min: [-0.4, 0.2, 0.2]
   # wrist_pos_max: [0.4, 1.0, 0.9]
+  # Mocap-only world-frame AABB shared by all listed fingertip body origins.
+  # Omit all three settings to disable fingertip bounds.
+  # fingertip_body_names: [LHand_ITIP_LINK, LHand_MTIP_LINK, LHand_RTIP_LINK, LHand_TTIP_LINK]
+  # fingertips_pos_min: [-0.45, 0.15, 0.15]
+  # fingertips_pos_max: [0.45, 1.05, 0.95]
   wrist_rotation_offset_rpy: [0.0, 0.0, 0.0]
   joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
   camera_names: []

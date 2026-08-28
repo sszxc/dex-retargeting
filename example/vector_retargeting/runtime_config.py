@@ -305,6 +305,10 @@ class SimulationConfig:
     # World-frame AABB for wrist target after root_position_offset. Both None = no clip.
     wrist_pos_min: Optional[List[float]] = None
     wrist_pos_max: Optional[List[float]] = None
+    # Optional mocap-only world-frame AABB shared by every configured fingertip body.
+    fingertip_body_names: Optional[List[str]] = None
+    fingertips_pos_min: Optional[List[float]] = None
+    fingertips_pos_max: Optional[List[float]] = None
     # Left wrist rotation calibration: R_out = wrist_rotation_calib_matrix @ R_wrist (same convention as detector)
     wrist_rotation_calib_matrix: List[List[float]] = field(default_factory=_identity_3x3)
     joint_indices: Optional[List[int]] = field(default_factory=lambda: list(range(22)))
@@ -354,6 +358,54 @@ class SimulationConfig:
             if np.any(lo > hi):
                 raise ValueError(
                     "simulation.wrist_pos_min must be <= wrist_pos_max on every axis"
+                )
+        fingertip_parts = (
+            self.fingertip_body_names,
+            self.fingertips_pos_min,
+            self.fingertips_pos_max,
+        )
+        if any(value is not None for value in fingertip_parts) and not all(
+            value is not None for value in fingertip_parts
+        ):
+            raise ValueError(
+                "simulation.fingertip_body_names, simulation.fingertips_pos_min, "
+                "and simulation.fingertips_pos_max must be set together"
+            )
+        if self.fingertip_body_names is not None:
+            if any(not isinstance(name, str) for name in self.fingertip_body_names):
+                raise ValueError(
+                    "simulation.fingertip_body_names must contain only strings"
+                )
+            names = [name.strip() for name in self.fingertip_body_names]
+            if not names or any(not name for name in names):
+                raise ValueError(
+                    "simulation.fingertip_body_names must contain non-empty body names"
+                )
+            if len(set(names)) != len(names):
+                raise ValueError(
+                    "simulation.fingertip_body_names must not contain duplicates"
+                )
+            self.fingertip_body_names = names
+            if not self.mocap.wrist_mocap:
+                raise ValueError(
+                    "simulation fingertip bounds require "
+                    "simulation.mocap.wrist_mocap=true"
+                )
+            lo = np.asarray(self.fingertips_pos_min, dtype=np.float64).reshape(-1)
+            hi = np.asarray(self.fingertips_pos_max, dtype=np.float64).reshape(-1)
+            if lo.size != 3 or hi.size != 3:
+                raise ValueError(
+                    "simulation.fingertips_pos_min and fingertips_pos_max must "
+                    "have length 3"
+                )
+            if not np.all(np.isfinite(lo)) or not np.all(np.isfinite(hi)):
+                raise ValueError(
+                    "simulation.fingertips_pos_min and fingertips_pos_max must be finite"
+                )
+            if np.any(lo > hi):
+                raise ValueError(
+                    "simulation.fingertips_pos_min must be <= fingertips_pos_max "
+                    "on every axis"
                 )
         mat = np.asarray(self.wrist_rotation_calib_matrix, dtype=np.float64)
         if mat.shape != (3, 3):
@@ -511,6 +563,17 @@ def _parse_optional_xyz(raw: Dict[str, Any], key: str) -> Optional[List[float]]:
     return _parse_optional_vec(raw, key, 3)
 
 
+def _parse_optional_str_list(raw: Dict[str, Any], key: str) -> Optional[List[str]]:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"simulation.{key} must be a list of body names")
+    if any(not isinstance(item, str) for item in value):
+        raise ValueError(f"simulation.{key} must contain only strings")
+    return [item.strip() for item in value]
+
+
 def _parse_startup_joint_qpos(raw: Dict[str, Any]) -> Optional[Dict[str, float]]:
     value = raw.get("startup_joint_qpos")
     if value is None:
@@ -570,6 +633,9 @@ def _parse_simulation(raw: Dict[str, Any]) -> SimulationConfig:
         root_position_offset=list(raw.get("root_position_offset", [0.2, 0.0, -0.6])),
         wrist_pos_min=_parse_optional_xyz(raw, "wrist_pos_min"),
         wrist_pos_max=_parse_optional_xyz(raw, "wrist_pos_max"),
+        fingertip_body_names=_parse_optional_str_list(raw, "fingertip_body_names"),
+        fingertips_pos_min=_parse_optional_xyz(raw, "fingertips_pos_min"),
+        fingertips_pos_max=_parse_optional_xyz(raw, "fingertips_pos_max"),
         wrist_rotation_calib_matrix=_parse_wrist_rotation_calib_matrix(raw),
         joint_indices=raw.get("joint_indices", list(range(22))),
         camera_names=list(raw.get("camera_names", [])),
