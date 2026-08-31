@@ -2,3 +2,6 @@
 	path = assets
 	url = https://github.com/dexsuite/dex-urdf.git
 	branch = main
+[submodule "src/mujoco/YCB_sim"]
+	path = src/mujoco/YCB_sim
+	url = git@github.com:vikashplus/YCB_sim.git
