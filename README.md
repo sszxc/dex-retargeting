@@ -13,17 +13,6 @@
     pip install torch torchvision  # you may want to refer to the official website
     pip install -e ".[example]"  # ignore sapien version requirement here
     ```
-    Deprecated:
-    ```shell
-    conda create -n dex_retargeting python=3.12.12
-    conda activate dex_retargeting
-    pip install torch torchvision  # you may want to refer to the official website
-    pip install sapien==3.0.2
-    pip install cmeel-boost==1.87.0.1  # not sure which version securely works
-    pip install mediapipe==0.10.13
-    pip install -e ".[example]"  # ignore sapien version requirement here
-    pip install mujoco
-    ```
 
 3. Install required dependencies for Leap Motion Camera:
 
@@ -43,14 +32,8 @@
 
 
 ### Usage
-```shell
-python example/vector_retargeting/my_retargeting_mujoco.py --runtime-config-path src/dex_retargeting/configs/my/teleop_absolute_pose_allegro_hand_left_joint_runtime.yml
 
-# record the data (s: start episode, e: end and save to HDF5, q: quit)
-# 若场景 XML 中未定义相机，程序会使用内置默认相机，录制时相机名为 default，可传 --camera-names default
-```
-
-
+Please refer to [My_Retargeting](https://github.com/sszxc/dex-retargeting/blob/main/example/vector_retargeting/MyREADME.md).
 
 
 ![Recording](media/demo.webp)

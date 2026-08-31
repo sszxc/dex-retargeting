@@ -19,3 +19,8 @@ imgui.ini
 *.egg-info
 data/*
 !data/frame_render.py
+
+# local scratch / runtime logs
+/note
+/MUJOCO_LOG.TXT
+/tracker_log.txt

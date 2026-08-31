@@ -119,6 +119,7 @@
     <texture name="cube_surface" file="textures/openai_block.png" gridsize="3 4" gridlayout=".U..LFRB.D.."/>
     <material name="obj_material" texture="cube_surface" specular="5" shininess=".0"/>
 
+
     <!-- allegro_left materials and meshes -->
     <material name="black" rgba="0.2 0.2 0.2 1"/>
     <material name="white" rgba="0.9 0.9 0.9 1"/>
@@ -136,6 +137,9 @@
     <mesh file="link_15.0_tip.stl"/>
   </asset>
 
+  <include file="includes/defaults_ycb.xml"/>
+  <include file="includes/assets_035_power_drill.xml"/>
+
   <worldbody>
     <!-- lights & floor from test.xml -->
     <light pos="0.3 0 1.5" dir="0 0 -1" directional="true"/>
@@ -149,10 +153,15 @@
     </body>
 
     <!-- textured cubes on the table -->
-    <body name="cube" pos="0.0 0 0.05">
+    <!-- <body name="cube" pos="0.0 0 0.05">
       <freejoint name="cube_free"/>
       <geom name="cube_geom" type="box" mass="0.1" material="obj_material" size="0.05 0.05 0.05"
             quat="1 0 0 0" friction="0.5" rgba="1.0 1.0 0 0.99"/>
+    </body> -->
+
+    <body pos="0.0 0.0 0.01">
+        <include file="includes/body_035_power_drill.xml"/>
+        <freejoint/>
     </body>
 
     <!-- teleop root body: 3 translations + 3 rotations controlling the whole hand -->
@@ -284,13 +293,13 @@
 
   <actuator>
     <!-- teleop root 6-DoF position actuators (xyz + rotations) -->
-    <position name="act_tx" joint="tx" kp="1000"/>
-    <position name="act_ty" joint="ty" kp="1000"/>
-    <position name="act_tz" joint="tz" kp="1000"/>
+    <position name="act_tx" joint="tx" kp="100"/>
+    <position name="act_ty" joint="ty" kp="100"/>
+    <position name="act_tz" joint="tz" kp="100"/>
 
-    <position name="act_rx" joint="rx" kp="1000" ctrlrange="-6.28318 6.28318"/>
-    <position name="act_ry" joint="ry" kp="1000" ctrlrange="-6.28318 6.28318"/>
-    <position name="act_rz" joint="rz" kp="1000" ctrlrange="-6.28318 6.28318"/>
+    <position name="act_rx" joint="rx" kp="100" ctrlrange="-6.28318 6.28318"/>
+    <position name="act_ry" joint="ry" kp="100" ctrlrange="-6.28318 6.28318"/>
+    <position name="act_rz" joint="rz" kp="100" ctrlrange="-6.28318 6.28318"/>
 
     <!-- finger joint actuators from left_hand.xml -->
     <position name="ffa0" joint="ffj0" kp="1" class="base"/>
